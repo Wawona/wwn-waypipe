@@ -8,9 +8,15 @@
     wwn-toolchain.url = "github:Wawona/wwn-toolchain";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
+    # SSH stack (libssh2 + streamlocal patch used by the iOS in-process
+    # transport) lives in wwn-ssh since it was split out of wwn-toolchain.
+    wwn-ssh.url = "github:Wawona/wwn-ssh";
+    wwn-ssh.inputs.nixpkgs.follows = "nixpkgs";
+    wwn-ssh.inputs.rust-overlay.follows = "rust-overlay";
+    wwn-ssh.inputs.wwn-toolchain.follows = "wwn-toolchain";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, wwn-toolchain, ... }:
+  outputs = { self, nixpkgs, rust-overlay, wwn-toolchain, wwn-ssh, ... }:
     let
       darwinSystems = [ "x86_64-darwin" "aarch64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -58,7 +64,7 @@
       packages = forAll (system:
         let
           pkgs = pkgsFor system;
-          tc = mkToolchains { inherit pkgs; registry = baseRegistry // self.registryFragment; };
+          tc = mkToolchains { inherit pkgs; registry = baseRegistry // wwn-ssh.registryFragment // self.registryFragment; };
           isDarwin = builtins.elem system darwinSystems;
         in
         (if isDarwin then {

@@ -84,6 +84,7 @@
       "inputs": {
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
+        "wwn-ssh": "wwn-ssh",
         "wwn-toolchain": "wwn-toolchain"
       }
     },
@@ -119,6 +120,32 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "wwn-ssh": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ],
+        "wwn-toolchain": [
+          "wwn-toolchain"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783496241,
+        "narHash": "sha256-0kSc+WLUf+EtocCTZcUzEboIvYz9y4sCgwRAdyE39X0=",
+        "owner": "Wawona",
+        "repo": "wwn-ssh",
+        "rev": "08b4c0d2c9c4560a100c117ef359075c74113d0f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Wawona",
+        "repo": "wwn-ssh",
         "type": "github"
       }
     },
