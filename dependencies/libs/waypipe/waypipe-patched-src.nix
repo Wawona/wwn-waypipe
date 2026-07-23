@@ -62,8 +62,13 @@ pkgs.stdenvNoCC.mkDerivation {
         echo "  Check wwn-ssh libssh2/patch-streamlocal.sh + waypipe patch-waypipe-source.sh"
         exit 1
       fi
-      if grep -q "socat" src/transport_ssh2.rs || grep -q -- "--socket-fds" src/transport_ssh2.rs; then
-        echo "ERROR: transport_ssh2.rs still references socat/--socket-fds (not App Store path)"
+      # Reject an actual socat-spawn fallback (not App-Store-safe). Do NOT reject
+      # the plain "--socket-fds" string: the streamlocal transport legitimately
+      # matches on that CLI arg to strip it before invoking native waypipe on the
+      # remote (see patch-waypipe-source.sh). The streamlocal FFI check above
+      # already proves the App-Store-safe transport is wired.
+      if grep -qE 'Command::new\("socat"\)|"socat"|exec.*socat| socat ' src/transport_ssh2.rs; then
+        echo "ERROR: transport_ssh2.rs spawns socat (not the streamlocal App-Store path)"
         exit 1
       fi
       echo "✓ Verified libssh2 bridge + streamlocal FFI wired"
