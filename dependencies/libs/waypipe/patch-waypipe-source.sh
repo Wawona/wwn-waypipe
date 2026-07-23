@@ -1766,16 +1766,20 @@ path = "src/transport_ssh2.rs"
 with open(path, "r") as f:
     content = f.read()
 
-# Ensure transport_ssh2.rs uses streamlocal (not socat/nc or --socket-fds)
+# Ensure transport_ssh2.rs uses streamlocal (not socat/nc or --socket-fds).
+# Soft-failing here previously left Apple mobile on a broken SSH path.
 needs_rewrite = False
 if "socat" in content:
-    print("WARNING: transport_ssh2.rs still contains socat references - needs rewrite")
+    print("ERROR: transport_ssh2.rs still contains socat references - rewriting")
     needs_rewrite = True
 if "--socket-fds" in content:
-    print("WARNING: transport_ssh2.rs still contains --socket-fds - needs rewrite")
+    print("ERROR: transport_ssh2.rs still contains --socket-fds - rewriting")
     needs_rewrite = True
 if "streamlocal_ffi" not in content:
-    print("WARNING: transport_ssh2.rs missing streamlocal_ffi - needs rewrite")
+    print("ERROR: transport_ssh2.rs missing streamlocal_ffi - rewriting")
+    needs_rewrite = True
+if "libssh2_channel_forward_listen_streamlocal" not in content:
+    print("ERROR: transport_ssh2.rs missing libssh2 streamlocal listen FFI - rewriting")
     needs_rewrite = True
 
 if needs_rewrite:
