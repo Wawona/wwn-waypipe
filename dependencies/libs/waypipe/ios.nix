@@ -10,7 +10,36 @@
 
 let
   xcodeUtils = iosToolchain;
-  cargoTarget = if simulator then "aarch64-apple-ios-sim" else "aarch64-apple-ios";
+  isWatchOS = iosToolchain.isWatchOSToolchain or false;
+  isTVOS = iosToolchain.isTVOSToolchain or false;
+  isVisionOS = iosToolchain.isVisionOSToolchain or false;
+  cargoTarget =
+    if isWatchOS then
+      if simulator then "aarch64-apple-watchos-sim" else "aarch64-apple-watchos"
+    else if isTVOS then
+      if simulator then "aarch64-apple-tvos-sim" else "aarch64-apple-tvos"
+    else if isVisionOS then
+      if simulator then "aarch64-apple-visionos-sim" else "aarch64-apple-visionos"
+    else if simulator then
+      "aarch64-apple-ios-sim"
+    else
+      "aarch64-apple-ios";
+  deploymentTargetEnv =
+    if isWatchOS then ''
+      export WATCHOS_DEPLOYMENT_TARGET="${iosToolchain.deploymentTarget}"
+      unset IPHONEOS_DEPLOYMENT_TARGET
+    ''
+    else if isTVOS then ''
+      export TVOS_DEPLOYMENT_TARGET="${iosToolchain.deploymentTarget}"
+      unset IPHONEOS_DEPLOYMENT_TARGET
+    ''
+    else if isVisionOS then ''
+      export XROS_DEPLOYMENT_TARGET="${iosToolchain.deploymentTarget}"
+      unset IPHONEOS_DEPLOYMENT_TARGET
+    ''
+    else ''
+      export IPHONEOS_DEPLOYMENT_TARGET="${iosToolchain.deploymentTarget}"
+    '';
   # Use aarch64-apple-ios target for iOS device/App Store builds
   rustToolchain = pkgs.rust-bin.stable.latest.default.override {
     targets = [ cargoTarget ];
@@ -145,8 +174,12 @@ myRustPlatform.buildRustPackage {
     export FFMPEG_PREFIX="${ffmpeg}"
     export VULKAN_HEADERS_INCLUDE="${pkgs.vulkan-headers}/include"
 
-    # Set iOS deployment target for device
-    export IPHONEOS_DEPLOYMENT_TARGET="${iosToolchain.deploymentTarget}"
+    # Platform-specific deployment target (avoid iOS min-version on watch/tv/vision).
+    ${deploymentTargetEnv}
+
+    export OPENSSL_DIR="${openssl-ios}"
+    export OPENSSL_INCLUDE_DIR="${openssl-ios}/include"
+    export OPENSSL_LIB_DIR="${openssl-ios}/lib"
     
     # Set up library search paths
     export LIBRARY_PATH="${vulkan-loader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${libssh2}/lib:${mbedtls}/lib:${openssl-ios}/lib:${ffmpeg}/lib:$LIBRARY_PATH"

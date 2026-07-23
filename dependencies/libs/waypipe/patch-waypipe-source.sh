@@ -533,7 +533,7 @@ let _ = nix::fcntl::fcntl(&fd2, nix::fcntl::F_SETFL(nix::fcntl::OFlag::O_NONBLOC
     Ok((fd1, fd2))
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 pub fn pipe2(flags: nix::fcntl::OFlag) -> nix::Result<(OwnedFd, OwnedFd)> {
     use nix::fcntl;
     use nix::unistd;
@@ -550,12 +550,12 @@ pub enum Id {
     Pgid(nix::unistd::Pid),
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 pub fn waitid(_id: Id, _flags: nix::sys::wait::WaitPidFlag) -> nix::Result<nix::sys::wait::WaitStatus> {
     nix::sys::wait::waitpid(None, Some(nix::sys::wait::WaitPidFlag::WNOHANG))
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 pub fn ppoll(fds: &mut [nix::poll::PollFd], timeout: Option<nix::sys::time::TimeSpec>, _sigmask: Option<nix::sys::signal::SigSet>) -> nix::Result<nix::libc::c_int> {
     let timeout_ms = match timeout {
 Some(ts) => (ts.tv_sec() * 1000 + ts.tv_nsec() / 1_000_000) as nix::libc::c_int,
@@ -911,7 +911,7 @@ sed -i "s/-> Result<BorrowedFd, String>/-> Result<BorrowedFd<'_>, String>/g" src
 echo "Appending eventfd_ios to src/platform.rs"
 cat >> src/platform.rs <<'PLATFORM_EOF'
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 pub fn eventfd_macos(initval: u32, _flags: i32) -> nix::Result<std::os::unix::io::OwnedFd> {
     use nix::sys::stat;
     use nix::fcntl;
