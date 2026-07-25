@@ -13,6 +13,7 @@ let
   isWatchOS = iosToolchain.isWatchOSToolchain or false;
   isTVOS = iosToolchain.isTVOSToolchain or false;
   isVisionOS = iosToolchain.isVisionOSToolchain or false;
+  allowGpu = !isWatchOS && !isTVOS;
   cargoTarget =
     if isWatchOS then
       if simulator then "aarch64-apple-watchos-sim" else "aarch64-apple-watchos"
@@ -69,8 +70,17 @@ let
   openssl-ios = buildModule.buildForIOS "openssl" { inherit simulator; };
   # FFmpeg for video encoding/decoding
   ffmpeg = buildModule.buildForIOS "ffmpeg" { inherit simulator; };
-  # Vulkan loader (required to load the ICD)
-  vulkan-loader = pkgs.vulkan-loader;
+  iland =
+    if allowGpu then buildModule.buildForIOS "iland" { inherit simulator; } else null;
+  # Apple mobile is in-process/static: use wwn-iland's exact MoltenVK slice.
+  # Never pull the host macOS nixpkgs Vulkan loader into an iOS/xrOS link.
+  vulkan-loader =
+    if !allowGpu then null
+    else if isVisionOS then buildModule.buildForVisionOS "moltenvk" { inherit simulator; }
+    else buildModule.buildForIOS "moltenvk" { inherit simulator; };
+  waypipeFeatures =
+    [ "lz4" "zstd" "with_libssh2" ]
+    ++ lib.optionals allowGpu [ "video" "gbmfallback" ];
 
   # Use pre-generated Cargo.lock that includes bindgen for reproducible builds
   # This file was generated once and committed to the repository to avoid
@@ -134,7 +144,6 @@ myRustPlatform.buildRustPackage {
   __noChroot = true;
 
   buildInputs = [
-    vulkan-loader
     libwayland
     zstd
     lz4
@@ -142,10 +151,10 @@ myRustPlatform.buildRustPackage {
     mbedtls
     ffmpeg
     openssl-ios # iOS cross-compiled OpenSSL for libssh2-sys openssl-sys backend
-  ];
+  ] ++ lib.optionals allowGpu [ vulkan-loader iland ];
 
   # compression, in-process ssh, and video (static-only FFmpeg path)
-  buildFeatures = [ "lz4" "zstd" "with_libssh2" "video" ];
+  buildFeatures = waypipeFeatures;
 
   preConfigure = ''
     ${xcodeUtils.mkIOSBuildEnv { inherit simulator; }}
@@ -182,13 +191,13 @@ myRustPlatform.buildRustPackage {
     export OPENSSL_LIB_DIR="${openssl-ios}/lib"
     
     # Set up library search paths
-    export LIBRARY_PATH="${vulkan-loader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${libssh2}/lib:${mbedtls}/lib:${openssl-ios}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
+    export LIBRARY_PATH="${lib.optionalString allowGpu "${vulkan-loader}/lib:${iland}/lib:"}${libwayland}/lib:${zstd}/lib:${lz4}/lib:${libssh2}/lib:${mbedtls}/lib:${openssl-ios}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
     
     # Use Rust's built-in target
     export CARGO_BUILD_TARGET="${cargoTarget}"
     
     # Configure Rust flags for iOS target
-    export RUSTFLAGS="-A warnings -C linker=$XCODE_CLANG -C link-arg=-isysroot -C link-arg=$IOS_SDK -C link-arg=$APPLE_DEPLOYMENT_FLAG -L native=${vulkan-loader}/lib -L native=${libssh2}/lib -L native=${mbedtls}/lib -L native=${openssl-ios}/lib -L native=${ffmpeg}/lib $RUSTFLAGS"
+    export RUSTFLAGS="-A warnings -C linker=$XCODE_CLANG -C link-arg=-isysroot -C link-arg=$IOS_SDK -C link-arg=$APPLE_DEPLOYMENT_FLAG ${lib.optionalString allowGpu "-L native=${vulkan-loader}/lib -L native=${iland}/lib"} -L native=${libssh2}/lib -L native=${mbedtls}/lib -L native=${openssl-ios}/lib -L native=${ffmpeg}/lib $RUSTFLAGS"
     
     # Configure C compiler for target specific variables
     target_underscore=$(echo "${cargoTarget}" | tr '-' '_')
@@ -198,12 +207,12 @@ myRustPlatform.buildRustPackage {
     export "AR_''${target_underscore}"="ar"
     
     # Set PKG_CONFIG_PATH
-    export PKG_CONFIG_PATH="${libwayland}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${libssh2}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
+    export PKG_CONFIG_PATH="${lib.optionalString allowGpu "${iland}/lib/pkgconfig:"}${libwayland}/lib/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${libssh2}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
     export PKG_CONFIG_ALLOW_CROSS=1
     
     # Set up include paths for bindgen (wrap-zstd, wrap-lz4, wrap-ffmpeg)
-    export C_INCLUDE_PATH="${zstd}/include:${lz4}/include:${libssh2}/include:${openssl-ios}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$C_INCLUDE_PATH"
-    export CPP_INCLUDE_PATH="${zstd}/include:${lz4}/include:${libssh2}/include:${openssl-ios}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$CPP_INCLUDE_PATH"
+    export C_INCLUDE_PATH="${lib.optionalString allowGpu "${iland}/include:"}${zstd}/include:${lz4}/include:${libssh2}/include:${openssl-ios}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$C_INCLUDE_PATH"
+    export CPP_INCLUDE_PATH="${lib.optionalString allowGpu "${iland}/include:"}${zstd}/include:${lz4}/include:${libssh2}/include:${openssl-ios}/include:${ffmpeg}/include:${pkgs.vulkan-headers}/include:$CPP_INCLUDE_PATH"
     
     # Configure bindgen for wrap-ffmpeg (FFmpeg headers)
     export BINDGEN_EXTRA_CLANG_ARGS="-I${zstd}/include -I${lz4}/include -I${libssh2}/include -I${openssl-ios}/include -I${ffmpeg}/include -I${pkgs.vulkan-headers}/include -isysroot $IOS_SDK $APPLE_DEPLOYMENT_FLAG -target $APPLE_LINKER_TARGET"
@@ -246,7 +255,7 @@ CARGO_EOF
     # We ensure SDKROOT and DEVELOPER_DIR are set so host-side builds (proc-macros, build scripts) can find SDKs.
 
     # with_libssh2 is CRITICAL for iOS - enables in-process SSH (no subprocess spawn)
-    cargo build --lib --target ${cargoTarget} --release --no-default-features --features "lz4,zstd,with_libssh2,video"
+    cargo build --lib --target ${cargoTarget} --release --no-default-features --features "${lib.concatStringsSep "," waypipeFeatures}"
     
     runHook postBuild
   '';

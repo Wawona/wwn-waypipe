@@ -180,34 +180,9 @@ echo "✓ Cargo.lock written to match cargoLock"
 
 echo "=== Patching waypipe wrappers for iOS ==="
 
-# Patch all wrapper build.rs files to make dependencies optional
-# wrap-gbm: GBM only needed on Linux - generate empty bindings on iOS
-if [ -f "wrap-gbm/build.rs" ]; then
-  cat > wrap-gbm/build.rs <<'BUILDRS_EOF'
-    fn main() {
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-
-let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-let bindings_rs = out_dir.join("bindings.rs");
-
-#[cfg(target_os = "linux")]
-{
-    pkg_config::Config::new()
-        .probe("gbm")
-        .expect("Could not find gbm via pkg-config");
-}
-#[cfg(not(target_os = "linux"))]
-{
-    // Generate empty bindings on non-Linux (GBM not available)
-    fs::write(&bindings_rs, "// GBM bindings disabled - GBM not available on this platform\n").unwrap();
-    println!("cargo:warning=GBM not required on this platform");
-}
-    }
-BUILDRS_EOF
-  echo "✓ Patched wrap-gbm/build.rs"
-fi
+# Keep wrap-gbm's generated bindings. Apple GPU targets resolve the symbols
+# from statically linked wwn-iland; the IOSurface patch below changes only the
+# generated loader, not the GBM API surface.
 
 # wrap-ffmpeg: make dynamic loader usable for static-only iOS builds
 if [ -f "wrap-ffmpeg/build.rs" ]; then
@@ -1032,8 +1007,8 @@ old_pattern = """} else {
         None
     };"""
 
-new_code = """} else if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
-        // On macOS/iOS, DRM doesn't exist. Generate a synthetic device ID
+new_code = """} else if cfg!(target_vendor = "apple") {
+        // On Apple, DRM doesn't exist. Generate a synthetic device ID
         // from the Vulkan vendor_id and device_id to satisfy the protocol.
         let (vid, did) = (prop.properties.vendor_id, prop.properties.device_id);
         let synthetic_id = ((vid as u64) << 32) | (did as u64);
@@ -1093,12 +1068,12 @@ DRMPATCH
 
   # iOS App Store compliance: no runtime dylib loading (dlopen).
   # All libraries must be static or wrapped in .framework bundles.
-  # Patch setup_vulkan_instance() to return Ok(None) immediately on iOS
+  # Patch setup_vulkan_instance() to return Ok(None) on Apple-mobile builds
   # so no dlopen("libvulkan.dylib") occurs. Settings UI is unaffected.
   python3 <<'IOS_NO_DYLIB_PATCH'
 import sys
 
-# --- 1. Patch dmabuf.rs: skip Vulkan dlopen on iOS ---
+# --- 1. Patch dmabuf.rs: skip Vulkan dlopen on Apple mobile ---
 with open('src/dmabuf.rs', 'r') as f:
     content = f.read()
 
@@ -1109,10 +1084,9 @@ new_vulkan_fn = '''pub fn setup_vulkan_instance(
 # Insert an early return right after the opening brace of the function
 old_body_start = ') -> Result<Option<Arc<VulkanInstance>>, String> {\n    let app_name'
 new_body_start = """) -> Result<Option<Arc<VulkanInstance>>, String> {
-    // iOS: no dylib loading allowed (App Store compliance).
-    // Vulkan, kosmickrisp, MoltenVK are not shipped as dylibs.
-    if cfg!(target_os = "ios") {
-        debug!("Vulkan disabled on iOS (no dylib loading for App Store compliance)");
+    // Apple mobile: use statically linked iland GBM/IOSurface, never dlopen.
+    if cfg!(target_vendor = "apple") && !cfg!(target_os = "macos") {
+        debug!("Vulkan loader bypassed; using iland IOSurface GBM fallback");
         return Ok(None);
     }
     let app_name"""
@@ -1131,9 +1105,9 @@ with open('src/video.rs', 'r') as f:
 
 old_video_body = ') -> Result<Option<VulkanVideo>, String> {\n    /* loading libavcodec'
 new_video_body = """) -> Result<Option<VulkanVideo>, String> {
-    // iOS: no dylib loading allowed (App Store compliance).
-    if cfg!(target_os = "ios") {
-        debug!("Video encoding disabled on iOS (no dylib loading for App Store compliance)");
+    // Apple mobile: no runtime dylib loading.
+    if cfg!(target_vendor = "apple") && !cfg!(target_os = "macos") {
+        debug!("Video encoding disabled on Apple mobile (static-only policy)");
         return Ok(None);
     }
     /* loading libavcodec"""
@@ -1146,43 +1120,27 @@ if old_video_body in content:
 else:
     print("WARNING: Could not find setup_video body start in video.rs")
 
-# --- 3. Patch gbm.rs: skip GBM dlopen on iOS (already Linux-only, belt-and-suspenders) ---
-with open('src/gbm.rs', 'r') as f:
-    content = f.read()
+# --- 3. GBM remains enabled on Apple GPU targets. A later patch binds the
+# wrapper to current-process wwn-iland symbols and uses IOSurface-backed BOs.
+print("✓ Keeping GBM fallback enabled for iland IOSurface transport")
 
-old_gbm_body = 'pub fn setup_gbm_device(device: Option<u64>) -> Result<Option<Rc<GBMDevice>>, String> {\n    let mut id_list'
-new_gbm_body = """pub fn setup_gbm_device(device: Option<u64>) -> Result<Option<Rc<GBMDevice>>, String> {
-    if cfg!(target_os = "ios") {
-        return Ok(None);
-    }
-    let mut id_list"""
-
-if old_gbm_body in content:
-    content = content.replace(old_gbm_body, new_gbm_body)
-    with open('src/gbm.rs', 'w') as f:
-        f.write(content)
-    print("✓ Patched setup_gbm_device(): skip dlopen on iOS")
-else:
-    print("WARNING: Could not find setup_gbm_device body start in gbm.rs")
-
-# --- 4. Patch main.rs: auto-enable no_gpu on iOS ---
-# (main.rs is renamed to lib.rs later in the build; at this point it's still main.rs)
-# This makes waypipe automatically use --no-gpu behavior on iOS,
-# which filters out all dmabuf protocol messages and tells the remote
-# server not to use dmabufs either. Same as passing --no-gpu manually.
+# --- 4. Preserve runtime no_gpu policy on Apple mobile ---
+# Do not blanket-disable dmabuf on iOS: iland's IOSurface transport is the
+# zero-copy path. The host resolves --no-gpu from the selected ICD, explicit
+# machine policy, or an unavailable import path.
 import os
 main_rs = 'src/main.rs' if os.path.exists('src/main.rs') else 'src/lib.rs'
 with open(main_rs, 'r') as f:
     content = f.read()
 
 old_nogpu = 'no_gpu: *no_gpu || cfg!(not(feature = "dmabuf")),'
-new_nogpu = 'no_gpu: *no_gpu || cfg!(not(feature = "dmabuf")) || cfg!(target_os = "ios"),'
+new_nogpu = 'no_gpu: *no_gpu || cfg!(not(feature = "dmabuf")),'
 
 if old_nogpu in content:
     content = content.replace(old_nogpu, new_nogpu)
     with open(main_rs, 'w') as f:
         f.write(content)
-    print(f"✓ Patched {main_rs}: auto-enable no_gpu on iOS (no dmabuf/dylib)")
+    print(f"✓ Preserved {main_rs}: runtime no_gpu policy keeps IOSurface dmabuf available")
 else:
     print(f"WARNING: Could not find no_gpu initialization in {main_rs}")
 
@@ -1202,8 +1160,8 @@ old_fatal = '''if matches!(glob.dmabuf_device, DmabufDevice::Unavailable) {
                 }'''
 
 new_nonfatal = '''if matches!(glob.dmabuf_device, DmabufDevice::Unavailable) {
-                    if cfg!(target_os = "ios") || glob.opts.no_gpu {
-                        debug!("DMABUF unavailable (no_gpu/iOS), passing bind through");
+                    if (cfg!(target_vendor = "apple") && !cfg!(target_os = "macos")) || glob.opts.no_gpu {
+                        debug!("DMABUF unavailable (no_gpu/Apple mobile), passing bind through");
                         check_space!(msg.len(), 0, remaining_space);
                         copy_msg(msg, dst);
                         return Ok(ProcMsg::Done);
@@ -1357,92 +1315,157 @@ for rust_file in src/mainloop.rs src/tracking.rs; do
   fi
 done
 
-# Patch waypipe to conditionally compile GBM module only on Linux
-# On iOS, dmabuf works via Vulkan without GBM
-if [ -f "src/main.rs" ] && grep -q "mod gbm" src/main.rs; then
-  echo "Patching GBM module for iOS"
-  # Create a stub gbm module for non-Linux
-  cat > src/gbm_stub.rs <<'GBM_STUB_EOF'
-    // Stub GBM module for non-Linux platforms
-    use crate::util::AddDmabufPlane;
-    use std::rc::Rc;
+# Apple GPU targets use waypipe's real GBM fallback over wwn-iland. The
+# IOSurface ID is carried in iland's private high-bit modifier; the placeholder
+# fd only satisfies the linux-dmabuf wire shape. Both endpoints are in-process
+# on Apple mobile, so IOSurfaceLookup imports the same allocation without a
+# second compositor-facing copy.
+if [ -f "wrap-gbm/build.rs" ] && [ -f "src/gbm.rs" ] && [ -f "src/util.rs" ]; then
+  python3 <<'ILAND_GBM_PATCH'
+from pathlib import Path
 
-    // On iOS, dmabuf works via Vulkan without GBM
-
-    pub struct GbmDevice;
-    // Alias for compatibility with code expecting GBMDevice
-    pub type GBMDevice = GbmDevice;
-
-    // Make GbmBo an alias for GbmDmabuf so it works with DmabufImpl::Gbm
-    pub type GbmBo = GbmDmabuf;
-    // Alias for compatibility
-    pub type GBMBo = GbmBo;
-
-    // Stub for GBMDmabuf to satisfy method calls
-    pub struct GbmDmabuf {
-pub width: u32,
-pub height: u32,
-pub stride: u32,
-pub format: u32,
+build = Path("wrap-gbm/build.rs")
+text = build.read_text()
+text = text.replace(
+    '"gbm_import_fd_data",\n        "gbm_bo_transfer_flags",',
+    '"gbm_import_fd_data",\n        "gbm_import_fd_modifier_data",\n        "gbm_bo_transfer_flags",',
+    1,
+)
+text = text.replace(
+    'let vars = &["GBM_BO_IMPORT_FD"];',
+    'let vars = &["GBM_BO_IMPORT_FD", "GBM_BO_IMPORT_FD_MODIFIER"];',
+    1,
+)
+anchor = "    depfile_to_cargo(&dep_path);\n"
+static_loader = r'''    if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple")
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+    {
+        let generated = std::fs::read_to_string(&out_path).unwrap();
+        let compact = "let library = ::libloading::Library::new(path)?;";
+        let spaced = "let library = :: libloading :: Library :: new (path) ? ;";
+        let replacement = "let _ = path; let library: ::libloading::Library = ::libloading::os::unix::Library::this().into();";
+        let generated = if generated.contains(compact) {
+            generated.replacen(compact, replacement, 1)
+        } else if generated.contains(spaced) {
+            generated.replacen(spaced, replacement, 1)
+        } else {
+            panic!("bindgen GBM loader anchor changed");
+        };
+        std::fs::write(&out_path, generated).unwrap();
     }
-    pub type GBMDmabuf = GbmDmabuf;
+'''
+if static_loader not in text:
+    if anchor not in text:
+        raise SystemExit("wrap-gbm build anchor missing")
+    text = text.replace(anchor, static_loader + anchor, 1)
+build.write_text(text)
 
-    impl GbmDmabuf {
-pub fn nominal_size(&self, _stride: Option<u32>) -> usize {
-    (self.width * self.height * 4) as usize
-}
-pub fn get_bpp(&self) -> u32 {
-    4
-}
-pub fn copy_onto_dmabuf(&mut self, _stride: Option<u32>, _data: &[u8]) -> Result<(), String> {
-    Err("GBM not supported on iOS".to_string())
-}
-pub fn copy_from_dmabuf(&mut self, _stride: Option<u32>, _data: &mut [u8]) -> Result<(), String> {
-    Err("GBM not supported on iOS".to_string())
-}
+util = Path("src/util.rs")
+text = util.read_text()
+list_anchor = "pub fn list_render_device_ids() -> Vec<u64> {\n"
+list_insert = '''pub fn list_render_device_ids() -> Vec<u64> {
+    #[cfg(target_vendor = "apple")]
+    {
+        return vec![0x57574e49];
     }
+'''
+if list_anchor not in text:
+    raise SystemExit("list_render_device_ids anchor missing")
+text = text.replace(list_anchor, list_insert, 1)
+open_anchor = "pub fn drm_open_render(dev_id: u64, rdrw: bool) -> Result<OwnedFd, String> {\n"
+open_insert = '''pub fn drm_open_render(dev_id: u64, rdrw: bool) -> Result<OwnedFd, String> {
+    #[cfg(target_vendor = "apple")]
+    {
+        let _ = (dev_id, rdrw);
+        return std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .map(Into::into)
+            .map_err(|x| tag!("Failed to open iland virtual render fd: {}", x));
+    }
+'''
+if open_anchor not in text:
+    raise SystemExit("drm_open_render anchor missing")
+text = text.replace(open_anchor, open_insert, 1)
+util.write_text(text)
 
-    pub fn new(_path: &str) -> Result<GbmDevice, ()> {
-Err(())
-    }
-
-    pub fn gbm_supported_modifiers(_gbm: &GbmDevice, _format: u32) -> &'static [u64] {
-&[] // Return empty slice - modifiers handled via Vulkan on iOS
-    }
-
-    pub fn setup_gbm_device(_path: Option<u64>) -> Result<Option<Rc<GbmDevice>>, String> {
-Ok(None)
-    }
-
-    // Updated signature to match usage: (gbm, planes, width, height, format)
-    pub fn gbm_import_dmabuf(_gbm: &GbmDevice, _planes: Vec<AddDmabufPlane>, _width: u32, _height: u32, _format: u32) -> Result<GbmBo, String> {
-Err("GBM not available on iOS - use Vulkan instead".to_string())
-    }
-
-    pub fn gbm_create_dmabuf(_gbm: &GbmDevice, _width: u32, _height: u32, _format: u32, _modifiers: &[u64]) -> Result<(GbmBo, Vec<AddDmabufPlane>), String> {
-Err("GBM not available on iOS - use Vulkan instead".to_string())
-    }
-
-    pub fn gbm_get_device_id(_gbm: &GbmDevice) -> u64 {
-0 // Stub return value
-    }
-GBM_STUB_EOF
-  # Replace mod gbm with conditional compilation
-  # Ensure gbm_stub is accessible as gbm:: for non-Linux
-  awk '/^mod gbm;$/ {
-    print "#[cfg(target_os = \"linux\")]"
-    print "mod gbm;"
-    print "#[cfg(not(target_os = \"linux\"))]"
-    print "mod gbm_stub;"
-    print "#[cfg(not(target_os = \"linux\"))]"
-    print "pub mod gbm {"
-    print "    pub use super::gbm_stub::*;"
-    print "}"
-    next
-  }
-  { print }' src/main.rs > src/main.rs.tmp && mv src/main.rs.tmp src/main.rs || true
-  
-  echo "✓ Patched GBM module usage"
+gbm = Path("src/gbm.rs")
+text = gbm.read_text()
+text = text.replace(
+    '''        _ => {
+            return Err(tag!(
+                "Importing is only supported with invalid/unspecified or linear modifier, not {:#016x}", plane.modifier,
+            ));
+        }''',
+    '''        m if cfg!(target_vendor = "apple") && (m & 0x8000_0000_0000_0000) != 0 =>
+            gbm_bo_flags_GBM_BO_USE_RENDERING,
+        _ => {
+            return Err(tag!(
+                "Importing is only supported with invalid/unspecified, linear, or iland IOSurface modifier, not {:#016x}", plane.modifier,
+            ));
+        }''',
+    1,
+)
+legacy_import = '''        let bo = device.bindings.gbm_bo_import(
+            device.device,
+            GBM_BO_IMPORT_FD,
+            &mut data as *mut gbm_import_fd_data as *mut c_void,
+            flags,
+        );'''
+apple_import = '''        #[cfg(target_vendor = "apple")]
+        let bo = {
+            let mut modifier_data = gbm_import_fd_modifier_data {
+                width,
+                height,
+                format: drm_format,
+                num_fds: 1,
+                fds: [data.fd, -1, -1, -1],
+                strides: [stride as i32, 0, 0, 0],
+                offsets: [0, 0, 0, 0],
+                modifier,
+            };
+            device.bindings.gbm_bo_import(
+                device.device,
+                GBM_BO_IMPORT_FD_MODIFIER,
+                &mut modifier_data as *mut gbm_import_fd_modifier_data as *mut c_void,
+                flags,
+            )
+        };
+        #[cfg(not(target_vendor = "apple"))]
+        let bo = device.bindings.gbm_bo_import(
+            device.device,
+            GBM_BO_IMPORT_FD,
+            &mut data as *mut gbm_import_fd_data as *mut c_void,
+            flags,
+        );'''
+if legacy_import not in text:
+    raise SystemExit("GBM import anchor missing")
+text = text.replace(legacy_import, apple_import, 1)
+plane_anchor = '''        /* No failure mechanism is documented */
+        let stride = (device.bindings.gbm_bo_get_stride)(bo);
+        Ok(('''
+plane_insert = '''        /* No failure mechanism is documented */
+        let stride = (device.bindings.gbm_bo_get_stride)(bo);
+        let exported_modifier = if cfg!(target_vendor = "apple") {
+            (device.bindings.gbm_bo_get_modifier)(bo)
+        } else {
+            actual_mod
+        };
+        Ok(('''
+if plane_anchor not in text:
+    raise SystemExit("GBM export anchor missing")
+text = text.replace(plane_anchor, plane_insert, 1)
+text = text.replace(
+    '''                modifier: actual_mod,
+            }],''',
+    '''                modifier: exported_modifier,
+            }],''',
+    1,
+)
+gbm.write_text(text)
+ILAND_GBM_PATCH
+  echo "✓ Wired Apple waypipe GBM fallback to iland IOSurface buffers"
 fi
 
 # Fix LZ4 and Zstd type mismatches in src/compress.rs
@@ -2483,9 +2506,9 @@ if "run_client_oneshot_libssh2" not in content:
                     match crate::transport_ssh2::connect_ssh2(user, host, port, "", &waypipe_args) {
                         Ok(fd) => { drop(sock_cleanup); return handle_client_conn(fd, wayland_fd, options); }
                         Err(e) => {
-                            #[cfg(target_os = "ios")]
+                            #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
                             return Err(tag!("libssh2 failed: {}", e));
-                            #[cfg(not(target_os = "ios"))]
+                            #[cfg(not(all(target_vendor = "apple", not(target_os = "macos"))))]
                             { let _ = e; }
                         }
                     }
@@ -2500,14 +2523,14 @@ if "run_client_oneshot_libssh2" not in content:
         eprintln!("[WAYPIPE-SSH] WARNING: with_libssh2 feature NOT enabled at compile time!");
     }
     // On iOS, fork/exec is forbidden.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
     {
         eprintln!("[WAYPIPE-SSH] DIAG: Reaching iOS spawn guard - libssh2 block did not return early. command={}", command.is_some());
         let _ = &command;
         return Err(tag!("Cannot spawn subprocess on iOS. The libssh2 transport should have handled SSH."));
     }
     let mut cmd_child: Option<std::process::Child> = None;
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(all(target_vendor = "apple", not(target_os = "macos"))))]
     if let Some(command_seq) = command {
         cmd_child = Some(
             std::process::Command::new(command_seq[0])
@@ -2567,12 +2590,12 @@ run_client_inner_spawn = '''    /* Only run ssh once the necessary socket to for
     let mut cmd_child: Option<std::process::Child> = None;
     if let Some(command_seq) = command {'''
 run_client_inner_guarded = '''    /* Only run ssh once the necessary socket to forward has been set up */
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
     if command.is_some() {
         return Err(tag!("iOS requires --oneshot mode; multi-connection SSH spawn not supported"));
     }
     let mut cmd_child: Option<std::process::Child> = None;
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(all(target_vendor = "apple", not(target_os = "macos"))))]
     if let Some(command_seq) = command {'''
 if run_client_inner_spawn in content and run_client_inner_guarded not in content:
     content = content.replace(run_client_inner_spawn, run_client_inner_guarded)

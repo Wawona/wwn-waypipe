@@ -8,6 +8,11 @@
     wwn-toolchain.url = "github:Wawona/wwn-toolchain";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
+    # Graphics implementations (ANGLE/SwiftShader/ICDs) are owned by L1 iland.
+    wwn-iland.url = "github:Wawona/wwn-iland/development";
+    wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
+    wwn-iland.inputs.rust-overlay.follows = "rust-overlay";
+    wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
     # SSH stack (libssh2 + streamlocal patch used by the iOS in-process
     # transport) lives in wwn-ssh since it was split out of wwn-toolchain.
     wwn-ssh.url = "github:Wawona/wwn-ssh";
@@ -16,7 +21,7 @@
     wwn-ssh.inputs.wwn-toolchain.follows = "wwn-toolchain";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, wwn-toolchain, wwn-ssh, ... }:
+  outputs = { self, nixpkgs, rust-overlay, wwn-toolchain, wwn-iland, wwn-ssh, ... }:
     let
       darwinSystems = [ "x86_64-darwin" "aarch64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -64,11 +69,24 @@
       packages = forAll (system:
         let
           pkgs = pkgsFor system;
-          tc = mkToolchains { inherit pkgs; registry = baseRegistry // wwn-ssh.registryFragment // self.registryFragment; };
+          tc = mkToolchains {
+            inherit pkgs;
+            registry =
+              baseRegistry
+              // wwn-iland.registryFragment
+              // wwn-ssh.registryFragment
+              // self.registryFragment;
+          };
           isDarwin = builtins.elem system darwinSystems;
         in
         (if isDarwin then {
           waypipe-ios = tc.buildForIOS "waypipe" { };
+          waypipe-ios-sim = tc.buildForIOS "waypipe" { simulator = true; };
+          waypipe-ipados = tc.buildForIPadOS "waypipe" { };
+          waypipe-tvos = tc.buildForTVOS "waypipe" { };
+          waypipe-watchos = tc.buildForWatchOS "waypipe" { };
+          waypipe-visionos = tc.buildForVisionOS "waypipe" { };
+          waypipe-visionos-sim = tc.buildForVisionOS "waypipe" { simulator = true; };
           waypipe-macos = tc.buildForMacOS "waypipe" { };
         } else { }));
 
