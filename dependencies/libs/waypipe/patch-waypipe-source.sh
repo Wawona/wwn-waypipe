@@ -1301,17 +1301,13 @@ for rust_file in src/shadowfd.rs src/compress.rs src/video.rs; do
   fi
 done
 
-# Patch Linux-specific APIs that don't exist on iOS
+# Patch Linux-specific APIs that don't exist on iOS.
+# Do NOT strip #[cfg(feature = "dmabuf")] from mainloop/tracking: no-gpu
+# targets (watchOS/tvOS) rely on those gates so stub::dmabuf_stub supplies
+# types instead of the empty #![cfg]-gated dmabuf module.
 for rust_file in src/mainloop.rs src/tracking.rs; do
   if [ -f "$rust_file" ]; then
-    echo "Processing $rust_file..."
-    
-    # Remove feature gates from type definitions
-    echo "Removing feature gates from $rust_file..."
-    sed -i.bak 's/^#\[cfg(feature = "dmabuf")\]\s*//g' "$rust_file" || true
-    sed -i.bak 's/^#\[cfg(all(feature = "dmabuf".*))\]\s*//g' "$rust_file" || true
-    sed -i.bak 's/#\[cfg(feature = "dmabuf")\]\s*//g' "$rust_file" || true
-    sed -i.bak 's/#\[cfg(all(feature = "dmabuf".*))\]\s*//g' "$rust_file" || true
+    echo "Processing $rust_file (preserving dmabuf feature gates)..."
   fi
 done
 
@@ -1552,81 +1548,16 @@ DMABUF_PYTHON_EOF
   echo "✓ Patched $_dmabuf_root for dmabuf visibility"
 done
 
-# Ensure dmabuf.rs itself compiles - remove feature gates that might block compilation
+# Ensure dmabuf.rs itself compiles when the dmabuf feature is on.
+# Keep #![cfg(feature = "dmabuf")] — stripping it makes the real module
+# collide with stub::dmabuf_stub on watchOS/tvOS (--no-default-features,
+# allowGpu=false). GPU targets enable the feature via waypipeFeatures.
 if [ -f "src/dmabuf.rs" ]; then
-  echo "Ensuring src/dmabuf.rs contents are compiled..."
-  # Inner crate/module attribute first (upstream: #![cfg(feature = "dmabuf")]).
-  # Do NOT use a bare #[cfg] sed here — it would match inside #![cfg] and leave '!'.
-  sed -i.bak '/^#!\[cfg(feature = "dmabuf")\]/d' src/dmabuf.rs || true
-  sed -i.bak '/^#!\[cfg(all(feature = "dmabuf".*))\]/d' src/dmabuf.rs || true
-  # Outer item attributes
-  sed -i.bak 's/^#\[cfg(feature = "dmabuf")\]\s*//g' src/dmabuf.rs || true
-  sed -i.bak 's/^#\[cfg(all(feature = "dmabuf".*))\]\s*//g' src/dmabuf.rs || true
+  echo "Leaving src/dmabuf.rs #![cfg(feature = \"dmabuf\")] intact (stub path for no-gpu)"
 fi
 
-# Fix tracking.rs DmabufDevice import
-if [ -f "src/tracking.rs" ]; then
-  # Remove any conditional imports and make them unconditional
-  sed -i.bak 's/^#\[cfg(feature = "dmabuf")\]\s*use crate::dmabuf::DmabufDevice;$/use crate::dmabuf::DmabufDevice;/g' src/tracking.rs || true
-  sed -i.bak 's/^#\[cfg(all(feature = "dmabuf".*))\]\s*use crate::dmabuf::DmabufDevice;$/use crate::dmabuf::DmabufDevice;/g' src/tracking.rs || true
-  
-  # Check if DmabufDevice import already exists (after making it unconditional)
-  # Use crate::DmabufDevice instead of crate::dmabuf::DmabufDevice
-  if ! grep -q "^use crate::DmabufDevice;" src/tracking.rs && ! grep -q "^use crate::dmabuf::DmabufDevice;" src/tracking.rs; then
-    echo "Adding unconditional DmabufDevice import to tracking.rs"
-    # Use Python to safely find insertion point (avoid breaking doc comments)
-    python3 <<'PYTHON_EOF'
-import re
-import sys
-
-file_path = 'src/tracking.rs'
-with open(file_path, 'r') as f:
-    lines = f.readlines()
-
-# Find a safe place to insert - after the last "use crate::" line
-# But make sure we're not inside a doc comment
-insert_idx = -1
-in_doc_comment = False
-
-for i, line in enumerate(lines):
-    # Track doc comment state
-    if '/**' in line:
-        if '*/' not in line:
-            in_doc_comment = True
-    if '*/' in line:
-        in_doc_comment = False
-
-    # Look for use crate:: imports, but only if not in doc comment
-    if not in_doc_comment and re.match(r'^\s*use crate::', line):
-        insert_idx = i
-
-# Insert after the last use crate:: line (or at top if none found)
-if insert_idx >= 0:
-    # Insert after this line - use crate::DmabufDevice (re-exported from root)
-    lines.insert(insert_idx + 1, 'use crate::DmabufDevice;\n')
-else:
-    # Find first non-comment, non-doc line
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped and not stripped.startswith('//') and not stripped.startswith('/*') and not stripped.startswith('*'):
-            lines.insert(i, 'use crate::DmabufDevice;\n')
-            break
-
-with open(file_path, 'w') as f:
-    f.writelines(lines)
-PYTHON_EOF
-    # Verify import was added
-    if grep -q "^use crate::DmabufDevice;" src/tracking.rs; then
-      echo "✓ Successfully added unconditional DmabufDevice import"
-    else
-      echo "Warning: DmabufDevice import may not have been added correctly"
-    fi
-  else
-    echo "DmabufDevice import already exists in tracking.rs"
-    # Ensure it uses crate::DmabufDevice not crate::dmabuf::DmabufDevice
-    sed -i.bak 's/use crate::dmabuf::DmabufDevice;/use crate::DmabufDevice;/g' src/tracking.rs || true
-  fi
-fi
+# tracking.rs: leave DmabufDevice imports feature-gated so no-gpu builds
+# resolve types from stub::dmabuf_stub via `use crate::stub::*`.
 
 # Note: Waypipe configured to use libssh2 on iOS
 echo "✓ Waypipe configured to use libssh2"
