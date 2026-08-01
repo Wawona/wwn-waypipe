@@ -38,20 +38,9 @@ if modified:
 PY
 fi
 
-# wrap-gbm: stub for non-Linux (Android target_os is "android")
-if [ -f "wrap-gbm/build.rs" ]; then
-  cat > wrap-gbm/build.rs <<'EOF'
-fn main() {
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let bindings_rs = out_dir.join("bindings.rs");
-    fs::write(&bindings_rs, "// GBM not available on Android\n").unwrap();
-    println!("cargo:warning=GBM not required on this platform");
-}
-EOF
-fi
+# wrap-gbm: keep real bindgen; Android resolves symbols from statically linked
+# wwn-iland (Library::this()) via the ILAND GBM patch below — same as Apple.
+# (Do not stub wrap-gbm/build.rs here.)
 
 # wrap-zstd: minimal bindings (same as iOS, no bindgen)
 if [ -f "wrap-zstd/build.rs" ]; then
@@ -359,42 +348,8 @@ if [ -f "src/compress.rs" ]; then
   echo "✓ Fixed compress.rs pointer casts"
 fi
 
-# Stub out gbm.rs — Android doesn't use GBM (Vulkan/EGL rendering)
-if [ -f "src/gbm.rs" ]; then
-  cat > src/gbm.rs <<'GBM_STUB'
-#![allow(dead_code, unused_imports, unused_variables)]
-use crate::util::AddDmabufPlane;
-use std::rc::Rc;
-
-pub struct GbmDevice;
-pub type GBMDevice = GbmDevice;
-pub type GbmBo = GbmDmabuf;
-pub type GBMBo = GbmBo;
-
-pub struct GbmDmabuf {
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub format: u32,
-}
-pub type GBMDmabuf = GbmDmabuf;
-
-impl GbmDmabuf {
-    pub fn nominal_size(&self, _stride: Option<u32>) -> usize { (self.width * self.height * 4) as usize }
-    pub fn get_bpp(&self) -> u32 { 4 }
-    pub fn copy_onto_dmabuf(&mut self, _stride: Option<u32>, _data: &[u8]) -> Result<(), String> { Err("GBM not available on Android".into()) }
-    pub fn copy_from_dmabuf(&mut self, _stride: Option<u32>, _data: &mut [u8]) -> Result<(), String> { Err("GBM not available on Android".into()) }
-}
-
-pub fn new(_path: &str) -> Result<GbmDevice, ()> { Err(()) }
-pub fn gbm_supported_modifiers(_gbm: &GbmDevice, _format: u32) -> &'static [u64] { &[] }
-pub fn setup_gbm_device(_path: Option<u64>) -> Result<Option<Rc<GbmDevice>>, String> { Ok(None) }
-pub fn gbm_import_dmabuf(_gbm: &GbmDevice, _planes: Vec<AddDmabufPlane>, _w: u32, _h: u32, _f: u32) -> Result<GbmBo, String> { Err("GBM not available on Android".into()) }
-pub fn gbm_create_dmabuf(_gbm: &GbmDevice, _w: u32, _h: u32, _f: u32, _m: &[u64]) -> Result<(GbmBo, Vec<AddDmabufPlane>), String> { Err("GBM not available on Android".into()) }
-pub fn gbm_get_device_id(_gbm: &GbmDevice) -> u64 { 0 }
-GBM_STUB
-  echo "✓ Stubbed gbm.rs"
-fi
+# GBM: keep real src/gbm.rs — wired to wwn-iland AHB (#86) by ILAND GBM patch.
+# (Do not stub gbm.rs here.)
 
 # Stub out video.rs — Android doesn't use Vulkan Video / FFmpeg codec
 # Signatures must match what mainloop.rs and dmabuf.rs call with.
@@ -480,6 +435,17 @@ pub fn start_dmavid_apply(
 }
 VIDEO_STUB
   echo "✓ Stubbed video.rs"
+fi
+
+# Wire real GBM against wwn-iland AHB (#86).
+# Prefer colocated helper (waypipe-patched-src copies it next to patch.sh).
+if [ -f ./patch-waypipe-iland-gbm.sh ]; then
+  # shellcheck source=/dev/null
+  source ./patch-waypipe-iland-gbm.sh
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/patch-waypipe-iland-gbm.sh"
 fi
 
 echo "✓ Waypipe patched for Android (OpenSSH, no libssh2)"

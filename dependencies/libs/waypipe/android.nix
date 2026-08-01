@@ -21,6 +21,8 @@ let
 
   # Dependencies
   libwayland = buildModule.buildForAndroid "libwayland" { };
+  # Mode A GBM over AHB (#86) — same high-bit modifier as Apple IOSurface.
+  iland = buildModule.buildForAndroid "iland" { };
   # Vulkan driver for Android: SwiftShader (CPU-based fallback)
   swiftshader = buildModule.buildForAndroid "swiftshader" { };
   # Compression libraries for waypipe features
@@ -35,6 +37,7 @@ let
   cargoBuildFeatures = [
     "dmabuf"
     "video"
+    "gbmfallback"
   ];
 
   # Use pre-generated Cargo.lock that includes bindgen for reproducible builds
@@ -219,12 +222,14 @@ rustPlatform.buildRustPackage {
     pkg-config
     waylandProtocols
     rustPlatform.bindgenHook
+    rust-bindgen # CLI used by wrap-gbm/build.rs (Command::new("bindgen"))
     shaderc
-    # Need python3 for some scripts?
+    python3 # ILAND GBM patch (patch-waypipe-iland-gbm.sh)
   ];
 
   buildInputs = [
     libwayland
+    iland
     swiftshader # Vulkan ICD driver for Android
     zstd # Compression library
     lz4 # Compression library
@@ -269,26 +274,28 @@ rustPlatform.buildRustPackage {
     echo "Using GLSLC: $GLSLC"
 
     # Set PKG_CONFIG_PATH to find target libraries
-    export PKG_CONFIG_PATH="${libwayland}/lib/pkgconfig:${waylandProtocols}/share/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
+    export PKG_CONFIG_PATH="${iland}/lib/pkgconfig:${libwayland}/lib/pkgconfig:${waylandProtocols}/share/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
     export PKG_CONFIG_ALLOW_CROSS=1
     export PKG_CONFIG_aarch64_linux_android="${buildPackages.pkg-config}/bin/pkg-config"
     echo "Using PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
 
     # Set up library search paths for Vulkan driver
-    export LIBRARY_PATH="${swiftshader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
+    export LIBRARY_PATH="${iland}/lib:${swiftshader}/lib:${libwayland}/lib:${zstd}/lib:${lz4}/lib:${ffmpeg}/lib:$LIBRARY_PATH"
 
     # Export specific lib paths for build.rs to pick up if pkg-config fails to propagate them
     export ZSTD_LIB_DIR="${zstd}/lib"
     export LZ4_LIB_DIR="${lz4}/lib"
 
     # Set up include paths for bindgen (needed for wrap-zstd, wrap-lz4, and wrap-ffmpeg)
-    export C_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:$C_INCLUDE_PATH"
-    export CPP_INCLUDE_PATH="${zstd}/include:${lz4}/include:${ffmpeg}/include:$CPP_INCLUDE_PATH"
+    export C_INCLUDE_PATH="${iland}/include:${zstd}/include:${lz4}/include:${ffmpeg}/include:$C_INCLUDE_PATH"
+    export CPP_INCLUDE_PATH="${iland}/include:${zstd}/include:${lz4}/include:${ffmpeg}/include:$CPP_INCLUDE_PATH"
 
     # Configure Bindgen to find Android NDK headers and FFmpeg
     # We need to point to the sysroot include directories
-    export BINDGEN_EXTRA_CLANG_ARGS="-isystem ${zstd}/include -isystem ${lz4}/include -isystem ${ffmpeg}/include -isystem ${androidToolchain.androidNdkSysroot}/usr/include -isystem ${androidToolchain.androidNdkSysroot}/usr/include/${androidToolchain.androidTarget}"
+    export BINDGEN_EXTRA_CLANG_ARGS="-isystem ${iland}/include -isystem ${zstd}/include -isystem ${lz4}/include -isystem ${ffmpeg}/include -isystem ${androidToolchain.androidNdkSysroot}/usr/include -isystem ${androidToolchain.androidNdkSysroot}/usr/include/${androidToolchain.androidTarget}"
     echo "BINDGEN_EXTRA_CLANG_ARGS: $BINDGEN_EXTRA_CLANG_ARGS"
+    export BINDGEN="${buildPackages.rust-bindgen}/bin/bindgen"
+    export PATH="${buildPackages.rust-bindgen}/bin:$PATH"
 
     echo "Vulkan driver (SwiftShader) library path: ${swiftshader}/lib"
     ls -la "${swiftshader}/lib/" || echo "Warning: SwiftShader lib directory not found"
@@ -310,10 +317,13 @@ rustPlatform.buildRustPackage {
     $PKG_CONFIG_aarch64_linux_android --libs liblz4 || echo "pkg-config failed"
 
     # Pass library paths via RUSTFLAGS to ensure linker finds them
-    export RUSTFLAGS="-L native=${zstd}/lib -L native=${lz4}/lib"
+    export RUSTFLAGS="-L native=${iland}/lib -L native=${zstd}/lib -L native=${lz4}/lib -C link-arg=-liland_userland"
+    export BINDGEN="${buildPackages.rust-bindgen}/bin/bindgen"
+    export PATH="${buildPackages.rust-bindgen}/bin:$PATH"
+    export PKG_CONFIG_PATH="${iland}/lib/pkgconfig:${libwayland}/lib/pkgconfig:${waylandProtocols}/share/pkgconfig:${zstd}/lib/pkgconfig:${lz4}/lib/pkgconfig:${ffmpeg}/lib/pkgconfig:$PKG_CONFIG_PATH"
 
     echo "Starting cargo build..."
-    cargo build -vv --target aarch64-linux-android --release --bin waypipe --offline --features "dmabuf,video"
+    cargo build -vv --target aarch64-linux-android --release --bin waypipe --offline --features "dmabuf,video,gbmfallback"
   '';
 
   installPhase = ''
@@ -329,73 +339,11 @@ rustPlatform.buildRustPackage {
         # Copy generated Cargo.lock
         cp ${updatedCargoLockFile} Cargo.lock
 
-        # Stub GBM for Android (as we don't have libgbm usually)
-        if [ -f "wrap-gbm/build.rs" ]; then
-          cat > wrap-gbm/build.rs <<'BUILDRS_EOF'
-    fn main() {
-        use std::env;
-        use std::fs;
-        use std::path::PathBuf;
-        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-        let bindings_rs = out_dir.join("bindings.rs");
-        // Force GBM stubbing on Android
-        fs::write(&bindings_rs, "// GBM bindings disabled - GBM not available on this platform\n").unwrap();
-        println!("cargo:warning=GBM not required on this platform");
-    }
-    BUILDRS_EOF
-        fi
-        
-        # Create src/gbm.rs stub for Android (replacing original)
-        cat > src/gbm.rs <<'GBM_EOF'
-    use std::os::unix::io::RawFd;
-    use crate::util::AddDmabufPlane;
-    use std::rc::Rc;
-
-    pub struct GbmDevice {}
-    impl GbmDevice {
-        pub fn new(_fd: RawFd) -> Result<Rc<Self>, String> { Ok(Rc::new(Self {})) }
-    }
-
-    pub struct GbmDmabuf {
-        pub width: u32,
-        pub height: u32,
-        pub stride: u32,
-        pub format: u32,
-    }
-    impl GbmDmabuf {
-        pub fn nominal_size(&self, _stride: Option<u32>) -> usize { (self.width * self.height * 4) as usize }
-        pub fn get_bpp(&self) -> u32 { 4 }
-        pub fn copy_onto_dmabuf(&mut self, _stride: Option<u32>, _data: &[u8]) -> Result<(), String> {
-            Err("GBM not supported".to_string())
-        }
-        pub fn copy_from_dmabuf(&mut self, _stride: Option<u32>, _data: &mut [u8]) -> Result<(), String> {
-            Err("GBM not supported".to_string())
-        }
-    }
-    pub type GbmBo = GbmDmabuf;
-    pub type GBMDmabuf = GbmDmabuf;
-    pub type GBMDevice = GbmDevice;
-
-    pub fn gbm_import_dmabuf<T>(_gbm: &GbmDevice, _planes: Vec<T>, _width: u32, _height: u32, _format: u32) -> Result<GbmDmabuf, String> {
-         Err("GBM not supported".to_string())
-    }
-
-    pub fn gbm_supported_modifiers(_gbm: &GbmDevice, _format: u32) -> &'static [u64] {
-        &[]
-    }
-
-    pub fn gbm_create_dmabuf(_gbm: &GbmDevice, _width: u32, _height: u32, _format: u32, _modifiers: &[u64]) -> Result<(GbmDmabuf, Vec<AddDmabufPlane>), String> {
-        Err("GBM not supported".to_string())
-    }
-
-    pub fn gbm_get_device_id(_gbm: &GbmDevice) -> u64 {
-        0
-    }
-
-    pub fn setup_gbm_device(_device: Option<u64>) -> Result<Option<Rc<GbmDevice>>, String> {
-        Ok(None)
-    }
-    GBM_EOF
+        # Wire real GBM against wwn-iland AHB (#86) — same as Apple mobile.
+        cp ${./patch-waypipe-iland-gbm.sh} ./patch-waypipe-iland-gbm.sh
+        chmod +x ./patch-waypipe-iland-gbm.sh
+        # shellcheck source=/dev/null
+        source ./patch-waypipe-iland-gbm.sh
 
         # Patch src/main.rs for pipe2 compat on Android
         if [ -f "src/main.rs" ]; then

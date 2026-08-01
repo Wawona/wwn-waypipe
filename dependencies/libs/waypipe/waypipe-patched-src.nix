@@ -38,9 +38,10 @@ pkgs.stdenvNoCC.mkDerivation {
   '';
 
   installPhase = ''
-    # Run the platform-specific patch script
+    # Run the platform-specific patch script (+ colocated ILAND GBM helper).
     cp ${patchScript} ./patch.sh
-    chmod +x ./patch.sh
+    cp ${./patch-waypipe-iland-gbm.sh} ./patch-waypipe-iland-gbm.sh
+    chmod +x ./patch.sh ./patch-waypipe-iland-gbm.sh
     bash ./patch.sh
 
     # Verify libssh2 + streamlocal bridge (iOS/macOS use patch-waypipe-source.sh).

@@ -1,8 +1,8 @@
 # wwn-waypipe
 
 Wawona's [waypipe](https://gitlab.freedesktop.org/mstoeckl/waypipe) port for remote
-Wayland display, cross-compiled for Apple platforms (IOSurface + Mach-port transport,
-no GBM/DMA-BUF/Vulkan) and Android.
+Wayland display, cross-compiled for Apple platforms (IOSurface + Mach-port transport)
+and Android (AHardwareBuffer GBM via wwn-iland, same #86 high-bit modifier).
 
 Patch-overlay model: pristine waypipe `v0.11.0` is pinned in `waypipe-src.nix` and
 patched at build time (`patch-waypipe-source.sh`, `patch-waypipe-android.sh`).
@@ -54,11 +54,11 @@ waypipe --socket "$XDG_RUNTIME_DIR/waypipe-anowaw" \
 ```
 
 Buffer transport degrades gracefully: anowaW prefers zero-copy dmabuf
-(IOSurface on macOS, `AHardwareBuffer` on Android), but when waypipe runs with
-`--no-gpu` — or the remote has no GPU import path — both waypipe and the anowaW
-core fall back to the always-available `wl_shm` copy path, so remote forwarding
-works even on headless/software compositors. This is the same SHM fallback the
-bridge uses locally against software Weston.
+(IOSurface on macOS, `AHardwareBuffer` on Android via wwn-iland GBM — same #86
+high-bit modifier convention), but when waypipe runs with `--no-gpu` — or the
+remote has no GPU import path — both waypipe and the anowaW core fall back to
+the always-available `wl_shm` copy path. Remote SSH cannot ship AHB handles;
+SHM/`--no-gpu` remains the remote fallback.
 
 > Scope: the local desktop machine anowaW attaches to must still be a local-only
 > nested-Weston compositor (Wawona enforces this filter). Remote forwarding is an
