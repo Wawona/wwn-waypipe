@@ -1503,15 +1503,16 @@ if [ -f "Cargo.toml" ] && grep -q 'name = "test_proto"' Cargo.toml; then
   echo "✓ Disabled test_proto binary"
 fi
 
-# Ensure dmabuf module is included unconditionally
-# Ensure dmabuf module is included unconditionally using robust Python patching
-if [ -f "src/main.rs" ]; then
-    echo "Patching src/main.rs to force-enable dmabuf module..."
-    python3 <<'DMABUF_PYTHON_EOF'
-import sys
-import re
-
-file_path = "src/main.rs"
+# Ensure dmabuf module is included unconditionally (lib and/or main; iOS renames
+# main.rs → lib.rs later for --lib builds).
+for _dmabuf_root in src/main.rs src/lib.rs; do
+  if [ ! -f "$_dmabuf_root" ]; then
+    continue
+  fi
+  echo "Patching $_dmabuf_root to force-enable dmabuf module..."
+  DMABUF_ROOT="$_dmabuf_root" python3 <<'DMABUF_PYTHON_EOF'
+import os
+file_path = os.environ["DMABUF_ROOT"]
 with open(file_path, "r") as f:
     lines = f.readlines()
 
@@ -1520,12 +1521,11 @@ found_dmabuf = False
 
 for line in lines:
     stripped = line.strip()
-    
+
     if "mod dmabuf;" in stripped:
         found_dmabuf = True
         print(f"Found dmabuf declaration: {stripped}")
-        
-        # Backtrack in new_lines to disable attached attributes
+
         j = len(new_lines) - 1
         while j >= 0:
             prev = new_lines[j].strip()
@@ -1534,13 +1534,10 @@ for line in lines:
                 new_lines[j] = "// " + new_lines[j]
                 j -= 1
             elif prev.startswith("//") or not prev:
-                # Skip comments or empty lines
                 j -= 1
             else:
-                # Stop if we hit other code or unrelated items
                 break
-        
-        # Append unconditional public mod declaration
+
         new_lines.append("pub mod dmabuf;\n")
     else:
         new_lines.append(line)
@@ -1549,14 +1546,11 @@ if not found_dmabuf:
     print("mod dmabuf; not found, appending to end.")
     new_lines.append("\npub mod dmabuf;\n")
 
-# Use 'pub mod' if it wasn't already (simple string replacement just in case)
-# but the logic above appends "pub mod dmabuf;\n" so we are good.
-
 with open(file_path, "w") as f:
     f.writelines(new_lines)
 DMABUF_PYTHON_EOF
-    echo "✓ Patched src/main.rs for dmabuf visibility"
-fi
+  echo "✓ Patched $_dmabuf_root for dmabuf visibility"
+done
 
 # Ensure dmabuf.rs itself compiles - remove feature gates that might block compilation
 if [ -f "src/dmabuf.rs" ]; then
