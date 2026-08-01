@@ -268,7 +268,10 @@ CARGO_EOF
   # This enables GPU-accelerated buffer sharing for nested compositors like Weston
   # Also patch other wrappers that may be built unconditionally
   postPatch = ''
-    # Run common patching script
+    # Run common patching script (+ colocated ILAND GBM helper; required when
+    # the patch script is invoked from the Nix store, not the source tree).
+    cp ${./patch-waypipe-iland-gbm.sh} ./patch-waypipe-iland-gbm.sh
+    chmod +x ./patch-waypipe-iland-gbm.sh
     ${pkgs.bash}/bin/bash ${./patch-waypipe-source.sh}
 
     # Write Cargo.lock to source directory to match cargoLock.lockFile
