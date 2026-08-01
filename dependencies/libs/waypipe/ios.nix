@@ -78,9 +78,13 @@ let
     if !allowGpu then null
     else if isVisionOS then buildModule.buildForVisionOS "moltenvk" { inherit simulator; }
     else buildModule.buildForIOS "moltenvk" { inherit simulator; };
+  # dmabuf must be listed explicitly: --no-default-features drops it, and
+  # dmabuf.rs is gated with #![cfg(feature = "dmabuf")]. video pulls dmabuf
+  # transitively in upstream Cargo.toml, but keep it first-class so --lib
+  # builds never see an empty crate::dmabuf module.
   waypipeFeatures =
     [ "lz4" "zstd" "with_libssh2" ]
-    ++ lib.optionals allowGpu [ "video" "gbmfallback" ];
+    ++ lib.optionals allowGpu [ "dmabuf" "video" "gbmfallback" ];
 
   # Use pre-generated Cargo.lock that includes bindgen for reproducible builds
   # This file was generated once and committed to the repository to avoid

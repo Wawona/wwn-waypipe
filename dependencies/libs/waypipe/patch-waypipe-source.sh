@@ -1555,12 +1555,13 @@ done
 # Ensure dmabuf.rs itself compiles - remove feature gates that might block compilation
 if [ -f "src/dmabuf.rs" ]; then
   echo "Ensuring src/dmabuf.rs contents are compiled..."
-  # Remove feature gates from ALL pub items (enums, structs, types, functions, impls)
+  # Inner crate/module attribute first (upstream: #![cfg(feature = "dmabuf")]).
+  # Do NOT use a bare #[cfg] sed here — it would match inside #![cfg] and leave '!'.
+  sed -i.bak '/^#!\[cfg(feature = "dmabuf")\]/d' src/dmabuf.rs || true
+  sed -i.bak '/^#!\[cfg(all(feature = "dmabuf".*))\]/d' src/dmabuf.rs || true
+  # Outer item attributes
   sed -i.bak 's/^#\[cfg(feature = "dmabuf")\]\s*//g' src/dmabuf.rs || true
   sed -i.bak 's/^#\[cfg(all(feature = "dmabuf".*))\]\s*//g' src/dmabuf.rs || true
-  # Also remove feature gates from impl blocks and other items
-  sed -i.bak 's/#\[cfg(feature = "dmabuf")\]\s*//g' src/dmabuf.rs || true
-  sed -i.bak 's/#\[cfg(all(feature = "dmabuf".*))\]\s*//g' src/dmabuf.rs || true
 fi
 
 # Fix tracking.rs DmabufDevice import
@@ -2467,6 +2468,12 @@ if [ -f "src/main.rs" ]; then
     mv src/main.rs src/lib.rs
 else
     echo "Warning: src/main.rs not found, cannot rename to lib.rs"
+fi
+
+# --lib builds import crate::dmabuf from mainloop/tracking; fail closed if missing.
+if [ -f "src/lib.rs" ] && ! grep -qE '^[[:space:]]*(pub[[:space:]]+)?mod[[:space:]]+dmabuf;' src/lib.rs; then
+  echo "pub mod dmabuf;" >> src/lib.rs
+  echo "✓ Appended pub mod dmabuf to src/lib.rs after rename"
 fi
 
 
