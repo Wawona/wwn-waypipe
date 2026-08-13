@@ -137,18 +137,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1785542474,
-        "narHash": "sha256-gkkpB2EXKHKpHPRwSHUmAeFIkJEH/w2ZIjokDxyBNPk=",
-        "owner": "Wawona",
-        "repo": "wwn-iland",
-        "rev": "b103ba76e8d92eb07543c9aff8287e1677f11765",
-        "type": "github"
+        "lastModified": 1786606319,
+        "narHash": "sha256-w/o7I/5w/ipAPcAzcrP6HQ2IFoJkhxQYsva9p7glvXk=",
+        "rev": "b65fb5e1acdaf9fc784180b9fb7c737ced958f04",
+        "revCount": 66,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/Wawona/wwn-iland/0.1.66%2Brev-b65fb5e1acdaf9fc784180b9fb7c737ced958f04/019ffa09-d33d-7d01-8376-dcf2b817efd3/source.tar.gz"
       },
       "original": {
-        "owner": "Wawona",
-        "ref": "development",
-        "repo": "wwn-iland",
-        "type": "github"
+        "type": "tarball",
+        "url": "https://flakehub.com/f/Wawona/wwn-iland/%2A"
       }
     },
     "wwn-ssh": {
@@ -164,17 +162,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1783496241,
-        "narHash": "sha256-0kSc+WLUf+EtocCTZcUzEboIvYz9y4sCgwRAdyE39X0=",
-        "owner": "Wawona",
-        "repo": "wwn-ssh",
-        "rev": "08b4c0d2c9c4560a100c117ef359075c74113d0f",
-        "type": "github"
+        "lastModified": 1786606277,
+        "narHash": "sha256-FV7Jwl3ODSPAyBjhGFLZX1xr0LStpfpyNkBiPORvh50=",
+        "rev": "75b982cf982b2164fc53893c73db57f382f3dca1",
+        "revCount": 14,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/Wawona/wwn-ssh/0.1.14%2Brev-75b982cf982b2164fc53893c73db57f382f3dca1/019ffa09-0754-7e22-a3e1-a82a2d01d45d/source.tar.gz"
       },
       "original": {
-        "owner": "Wawona",
-        "repo": "wwn-ssh",
-        "type": "github"
+        "type": "tarball",
+        "url": "https://flakehub.com/f/Wawona/wwn-ssh/%2A"
       }
     },
     "wwn-toolchain": {
@@ -188,18 +185,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1785542437,
-        "narHash": "sha256-6A7O604vVAoAZyVPoZha7QgaYoGc/s2Jw7ohDiSc21U=",
-        "owner": "Wawona",
-        "repo": "wwn-toolchain",
-        "rev": "a338bfce3a65cea253c41cdbde4124d2a990890f",
-        "type": "github"
+        "lastModified": 1786606037,
+        "narHash": "sha256-EQZCMXhCt2JMOdC+j11Nu5WFttyKUL/PkBB567+Ulbs=",
+        "rev": "46fe3ddd36717ca131651b9312b60dc4cab059a3",
+        "revCount": 49,
+        "type": "tarball",
+        "url": "https://api.flakehub.com/f/pinned/Wawona/wwn-toolchain/0.1.49%2Brev-46fe3ddd36717ca131651b9312b60dc4cab059a3/019ffa05-8a02-76f0-8c04-0916c14f665a/source.tar.gz"
       },
       "original": {
-        "owner": "Wawona",
-        "ref": "development",
-        "repo": "wwn-toolchain",
-        "type": "github"
+        "type": "tarball",
+        "url": "https://flakehub.com/f/Wawona/wwn-toolchain/%2A"
       }
     }
   },

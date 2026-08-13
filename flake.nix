@@ -5,17 +5,17 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
-    wwn-toolchain.url = "github:Wawona/wwn-toolchain/development";
+    wwn-toolchain.url = "https://flakehub.com/f/Wawona/wwn-toolchain/*";
     wwn-toolchain.inputs.nixpkgs.follows = "nixpkgs";
     wwn-toolchain.inputs.rust-overlay.follows = "rust-overlay";
     # Graphics implementations (ANGLE/SwiftShader/ICDs) are owned by L1 iland.
-    wwn-iland.url = "github:Wawona/wwn-iland/development";
+    wwn-iland.url = "https://flakehub.com/f/Wawona/wwn-iland/*";
     wwn-iland.inputs.nixpkgs.follows = "nixpkgs";
     wwn-iland.inputs.rust-overlay.follows = "rust-overlay";
     wwn-iland.inputs.wwn-toolchain.follows = "wwn-toolchain";
     # SSH stack (libssh2 + streamlocal patch used by the iOS in-process
     # transport) lives in wwn-ssh since it was split out of wwn-toolchain.
-    wwn-ssh.url = "github:Wawona/wwn-ssh";
+    wwn-ssh.url = "https://flakehub.com/f/Wawona/wwn-ssh/*";
     wwn-ssh.inputs.nixpkgs.follows = "nixpkgs";
     wwn-ssh.inputs.rust-overlay.follows = "rust-overlay";
     wwn-ssh.inputs.wwn-toolchain.follows = "wwn-toolchain";
