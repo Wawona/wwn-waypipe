@@ -1,5 +1,7 @@
 # wwn-waypipe
 
+[![CI](https://github.com/Wawona/wwn-waypipe/actions/workflows/ci.yml/badge.svg)](https://github.com/Wawona/wwn-waypipe/actions/workflows/ci.yml)
+
 Wawona's [waypipe](https://gitlab.freedesktop.org/mstoeckl/waypipe) port for remote
 Wayland display, cross-compiled for Apple platforms (IOSurface + Mach-port transport)
 and Android (AHardwareBuffer GBM via wwn-iland, same #86 high-bit modifier).
