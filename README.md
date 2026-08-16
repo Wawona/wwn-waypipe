@@ -46,18 +46,18 @@ nix profile install github:Wawona/wwn-waypipe/development#waypipe --priority 3
 which waypipe   # -> ~/.nix-profile/bin/waypipe
 ```
 
-## anowaW remote forwarding
+## Wawona Swinging Bridge remote forwarding
 
-The [wwn-anowaW](https://github.com/Wawona/wwn-anowaW) app bridge turns a native
+The [Wawona-Swinging-Bridge](https://github.com/Wawona/Wawona-Swinging-Bridge) app bridge turns a native
 macOS/Android app into an ordinary Wayland client (one `xdg_toplevel` per
 window, frames pushed as `wl_buffer`s). Because it speaks plain Wayland, waypipe
 can forward those surfaces to a **remote Linux compositor** with no protocol
-changes: point anowaW at waypipe's local client socket instead of the nested
+changes: point Swinging Bridge at waypipe's local client socket instead of the nested
 Weston socket, and waypipe tunnels the surface over SSH exactly like any other
 client.
 
 waypipe publishes a client-side proxy socket; the host app then starts the
-anowaW bridge against **that** socket name (the `socket_name` argument of
+Swinging Bridge bridge against **that** socket name (the `socket_name` argument of
 `anowaw_start`, normally `wawona-nested`) instead of the local nested Weston
 socket. Bridged app windows then appear on the *remote* machine's compositor:
 
@@ -69,14 +69,14 @@ waypipe --socket "$XDG_RUNTIME_DIR/waypipe-anowaw" \
 # (Wawona passes this instead of "wawona-nested" when remote mode is selected.)
 ```
 
-Buffer transport degrades gracefully: anowaW prefers zero-copy dmabuf
+Buffer transport degrades gracefully: Swinging Bridge prefers zero-copy dmabuf
 (IOSurface on macOS, `AHardwareBuffer` on Android via wwn-iland GBM — same #86
 high-bit modifier convention), but when waypipe runs with `--no-gpu` — or the
-remote has no GPU import path — both waypipe and the anowaW core fall back to
+remote has no GPU import path — both waypipe and the Swinging Bridge core fall back to
 the always-available `wl_shm` copy path. Remote SSH cannot ship AHB handles;
 SHM/`--no-gpu` remains the remote fallback.
 
-> Scope: the local desktop machine anowaW attaches to must still be a local-only
+> Scope: the local desktop machine Swinging Bridge attaches to must still be a local-only
 > nested-Weston compositor (Wawona enforces this filter). Remote forwarding is an
 > additional transport for the *bridged app surface*, not a way to select a
 > remote machine as the App Bridge desktop.
