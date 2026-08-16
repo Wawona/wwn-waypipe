@@ -34,7 +34,9 @@ nix build .#waypipe-linux   # Linux peer: nixpkgs waypipe-rs wrapped with --no-g
 ### Linux peer host (e.g. SLICEANDDICE)
 
 Remote SSH servers must run waypipe-rs that defaults to SHM (`--no-gpu`), otherwise
-`server-conn` can SIGSEGV on the dmabuf path when talking to Wawona:
+`server-conn` can SIGSEGV on the dmabuf path when talking to Wawona. The wrapper
+only injects `--no-gpu` when absent (Wawona's client already passes it; clap
+rejects duplicates).
 
 ```sh
 nix profile install github:Wawona/wwn-waypipe/development#waypipe --priority 3
