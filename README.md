@@ -28,6 +28,18 @@ patched = wwn-waypipe.lib.mkPatchedSrc {
 ```sh
 nix build .#waypipe-ios
 nix build .#waypipe-macos
+nix build .#waypipe-linux   # Linux peer: nixpkgs waypipe-rs wrapped with --no-gpu
+```
+
+### Linux peer host (e.g. SLICEANDDICE)
+
+Remote SSH servers must run waypipe-rs that defaults to SHM (`--no-gpu`), otherwise
+`server-conn` can SIGSEGV on the dmabuf path when talking to Wawona:
+
+```sh
+nix profile install github:Wawona/wwn-waypipe/development#waypipe --priority 3
+# ensure ~/.nix-profile/bin precedes /run/current-system/sw/bin (nixos default)
+which waypipe   # -> ~/.nix-profile/bin/waypipe
 ```
 
 ## anowaW remote forwarding

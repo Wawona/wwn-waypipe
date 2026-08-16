@@ -48,6 +48,8 @@
           visionos = wpDir + "/visionos.nix";
           watchos = wpDir + "/watchos.nix";
           macos = wpDir + "/macos.nix";
+          # Linux peers (SSH waypipe server): nixpkgs waypipe-rs + --no-gpu wrap.
+          linux = wpDir + "/linux.nix";
         };
       };
 
@@ -88,8 +90,15 @@
           waypipe-visionos = tc.buildForVisionOS "waypipe" { };
           waypipe-visionos-sim = tc.buildForVisionOS "waypipe" { simulator = true; };
           waypipe-macos = tc.buildForMacOS "waypipe" { };
-        } else { }));
-
+        } else {
+          # Linux host peer for macOS/Android Wawona SSH clients.
+          # Self-contained (nixpkgs waypipe-rs + --no-gpu); does not need the
+          # Apple/Android toolchain registry graph.
+          waypipe = pkgs.callPackage (wpDir + "/linux.nix") { };
+          waypipe-linux = pkgs.callPackage (wpDir + "/linux.nix") { };
+          default = pkgs.callPackage (wpDir + "/linux.nix") { };
+        })
+      );
       formatter = forAll (system: (pkgsFor system).nixfmt-rfc-style);
     };
 }
