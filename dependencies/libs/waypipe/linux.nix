@@ -19,6 +19,22 @@
 
 let
   real = pkgs.waypipe;
+  wrapScript = ''
+    #! /usr/bin/env bash
+    set -euo pipefail
+    real="${real}/bin/waypipe"
+    has_no_gpu=0
+    for arg in "$@"; do
+      case "$arg" in
+        --no-gpu) has_no_gpu=1 ;;
+      esac
+    done
+    if [ "$has_no_gpu" -eq 0 ]; then
+      exec "$real" --no-gpu "$@"
+    else
+      exec "$real" "$@"
+    fi
+  '';
 in
 pkgs.runCommand "waypipe-rs-wawona" {
   pname = "waypipe";
@@ -29,23 +45,7 @@ pkgs.runCommand "waypipe-rs-wawona" {
 } ''
   mkdir -p $out/bin $out/share/waypipe-rs
   ln -s ${real}/bin/waypipe $out/bin/waypipe-rs-unwrapped
-  cat > $out/bin/waypipe <<'EOF'
-#! /usr/bin/env bash
-set -euo pipefail
-real="@real@"
-has_no_gpu=0
-for arg in "$@"; do
-  case "$arg" in
-    --no-gpu) has_no_gpu=1 ;;
-  esac
-done
-if [ "$has_no_gpu" -eq 0 ]; then
-  exec "$real" --no-gpu "$@"
-else
-  exec "$real" "$@"
-fi
-EOF
-  substituteInPlace $out/bin/waypipe --replace-fail '@real@' ${real}/bin/waypipe
+  printf '%s\n' ${lib.escapeShellArg wrapScript} > $out/bin/waypipe
   chmod +x $out/bin/waypipe
   printf '%s\n' \
     "wawona-peer waypipe-rs (wraps nixpkgs ${real.pname or "waypipe"} ${real.version or ""})" \
