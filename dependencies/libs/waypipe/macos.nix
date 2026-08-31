@@ -308,8 +308,10 @@ pub const DRM_FORMAT_XBGR8888: u32 = 0x34324258;
 
 const IOSURFACE_PIXEL_FORMAT_BGRA: u32 = 0x42475241;
 
-/// Supported modifiers (only LINEAR on macOS)
-pub static SUPPORTED_MODIFIERS: [u64; 1] = [DRM_FORMAT_MOD_LINEAR];
+/// Wawona / wwn-iland #86: high bit set => IOSurface id in low 63 bits.
+pub const IOSURFACE_MODIFIER_BASE: u64 = 0x8000_0000_0000_0000;
+/// Modifiers we accept when creating buffers for Wawona (IOSurface #86).
+pub static SUPPORTED_MODIFIERS: [u64; 1] = [IOSURFACE_MODIFIER_BASE];
 
 /// macOS DMA-BUF device backed by IOSurface
 pub struct MacosDmabufDevice {
@@ -331,7 +333,11 @@ impl MacosDmabufDevice {
     }
 
     pub fn supports_format(&self, format: u32, modifier: u64) -> bool {
-        modifier == DRM_FORMAT_MOD_LINEAR && self.supported_formats.contains(&format)
+        // Accept Wawona IOSurface #86 (any id in low bits) and LINEAR for
+        // remote plane metadata before host translation into an IOSurface.
+        let is_iosurface = (modifier & IOSURFACE_MODIFIER_BASE) != 0;
+        let is_linear = modifier == DRM_FORMAT_MOD_LINEAR;
+        (is_iosurface || is_linear) && self.supported_formats.contains(&format)
     }
 
     pub fn get_supported_modifiers(&self, format: u32) -> &'static [u64] {
@@ -516,9 +522,8 @@ pub fn create_macos_dmabuf(
     let owned_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(std::os::unix::io::IntoRawFd::into_raw_fd(dummy_fd)) };
     
     let id = unsafe { IOSurfaceGetID(buf.iosurface) };
-    // Embed IOSurface ID in modifier with high bit set to indicate it's an ID
-    // 0x8000_0000_0000_0000 | id
-    let modifier = 0x8000_0000_0000_0000u64 | (id as u64);
+    // Embed IOSurface ID in modifier (#86 / wwn-iland + Wawona import).
+    let modifier = IOSURFACE_MODIFIER_BASE | (id as u64);
     
     let plane = AddDmabufPlane {
         fd: owned_fd,
@@ -1213,14 +1218,10 @@ pub mod macos;
 MODRS_EOF
 
         # ============================================================
-        # STEP 5: macOS DmabufDevice - DEFERRED (NOT CREATING mainloop_macos)
+        # Archive: older mainloop_macos sketch (NOT compiled).
+        # Active path is src/mainloop_macos.rs written earlier in this
+        # postPatch (IOSurface #86 create/import + DmabufDevice::MacOS arms).
         # ============================================================
-        # Full IOSurface-based dmabuf requires extensive waypipe modifications
-        # (adding MacOS variants to ~15 match statements in mainloop.rs/tracking.rs).
-        # For now, waypipe uses shared memory fallback on macOS.
-        # IOSurface code is preserved in dmabuf/macos.rs for future integration.
-        # 
-        # The following mainloop_macos.rs is preserved but NOT compiled:
         cat > src/mainloop_macos_UNUSED.rs <<'MAINLOOP_MACOS_EOF'
 //! macOS DMA-BUF device and buffer implementation using IOSurface
 //!
@@ -2077,22 +2078,20 @@ PLATFORM_EOF
           perl -i -pe 's/assert!\(errno == Errno::EINTR\);/if errno != Errno::EINTR { return Err(errno.to_string()); }/' src/main.rs
 
           # ============================================================
-          # Split-FD Patch: Support --socket-fds R,W for SSH native link
+          # Split-FD: working --socket-fds R,W for container vsock dialVsock.
+          # v0.11.0 uses clap (not a manual arg loop). Real dup/connect, not
+          # unreachable! (see wwn-containers waypipe-splitfd.nix).
           # ============================================================
           python3 <<'PY_EOF'
 import pathlib
-import os
-
 p = pathlib.Path('src/main.rs')
-if p.exists():
-    s = p.read_text()
-    
-    # 1. Add variant to SocketSpec and fix Clone trait
-    if 'SplitFD(OwnedFd, OwnedFd)' not in s:
-        s = s.replace('Unix(PathBuf),', 'Unix(PathBuf),\n    SplitFD(OwnedFd, OwnedFd),')
-        s = s.replace('#[derive(Debug, Clone)]\nenum SocketSpec', '#[derive(Debug)]\nenum SocketSpec')
-        # Add manual Clone implementation AFTER the enum definition
-        clone_impl = """
+s = p.read_text()
+
+# 1. SocketSpec::SplitFD variant + manual Clone impl.
+if 'SplitFD(OwnedFd, OwnedFd)' not in s:
+    s = s.replace('Unix(PathBuf),', 'Unix(PathBuf),\n    SplitFD(OwnedFd, OwnedFd),')
+    s = s.replace('#[derive(Debug, Clone)]\nenum SocketSpec', '#[derive(Debug)]\nenum SocketSpec')
+    clone_impl = """
 impl Clone for SocketSpec {
     fn clone(&self) -> Self {
         match self {
@@ -2109,60 +2108,154 @@ impl Clone for SocketSpec {
     }
 }
 """
-        # Find the closing brace of enum SocketSpec { ... }
-        # We look for the pattern: SplitFD(OwnedFd, OwnedFd),\n}
-        s = s.replace('SplitFD(OwnedFd, OwnedFd),\n}', 'SplitFD(OwnedFd, OwnedFd),\n}\n' + clone_impl)
+    s = s.replace('SplitFD(OwnedFd, OwnedFd),\n}', 'SplitFD(OwnedFd, OwnedFd),\n}\n' + clone_impl)
 
-    # 2. Add --socket-fds flag to argument parsing
+# 2. clap arg for --socket-fds (after the "socket" arg definition).
+clap_needle = """                // todo: decide value parser based on --vsock flag?
+                .value_parser(value_parser!(OsString)),
+        )
+        .arg(
+            Arg::new("display")"""
+clap_repl = """                // todo: decide value parser based on --vsock flag?
+                .value_parser(value_parser!(OsString)),
+        )
+        .arg(
+            Arg::new("socket-fds")
+                .long("socket-fds")
+                .value_name("R,W")
+                .help("Use pre-connected file descriptors R,W as the channel socket (Wawona container vsock handoff)"),
+        )
+        .arg(
+            Arg::new("display")"""
+if 'Arg::new("socket-fds")' not in s and clap_needle in s:
+    s = s.replace(clap_needle, clap_repl)
 
-    flag_needle = 'if arg == "--socket" || arg == "-s" {'
-    flag_patch = """if arg == "--socket-fds" {
-                i += 1;
-                let fds_str = args.next().ok_or_else(|| tag!("--socket-fds requires R,W argument"))?;
-                let parts: Vec<&str> = fds_str.to_str().unwrap().split(',').collect();
-                if parts.len() != 2 { return Err(tag!("--socket-fds requires R,W")); }
-                let r_fd: i32 = parts[0].parse().map_err(|_| tag!("Invalid R fd"))?;
-                let w_fd: i32 = parts[1].parse().map_err(|_| tag!("Invalid W fd"))?;
-                socket_path = Some(SocketSpec::SplitFD(
-                    unsafe { OwnedFd::from_raw_fd(r_fd) },
-                    unsafe { OwnedFd::from_raw_fd(w_fd) }
-                ));
-            } else if arg == "--socket" || arg == "-s" {"""
-    if flag_needle in s and '--socket-fds' not in s:
-        s = s.replace(flag_needle, flag_patch)
+# 3. Resolve --socket-fds into SocketSpec::SplitFD for client mode.
+client_needle = """    let client_socket = if let Some(s) = client_sock_arg {
+        Some(to_socket_spec(s)?)
+    } else {
+        None
+    };"""
+client_repl = """    let client_socket = if let Some(fds) = matches.get_one::<String>("socket-fds") {
+        let parts: Vec<&str> = fds.split(',').collect();
+        if parts.len() != 2 {
+            return Err("--socket-fds requires R,W".into());
+        }
+        let r_fd: i32 = parts[0].parse().map_err(|_| "--socket-fds: invalid R fd")?;
+        let w_fd: i32 = parts[1].parse().map_err(|_| "--socket-fds: invalid W fd")?;
+        use std::os::fd::FromRawFd;
+        Some(SocketSpec::SplitFD(
+            unsafe { OwnedFd::from_raw_fd(r_fd) },
+            unsafe { OwnedFd::from_raw_fd(w_fd) },
+        ))
+    } else if let Some(s) = client_sock_arg {
+        Some(to_socket_spec(s)?)
+    } else {
+        None
+    };"""
+if client_needle in s and 'socket-fds' not in s.split('let client_socket')[1].split('let server_socket')[0]:
+    s = s.replace(client_needle, client_repl)
 
-    # 3. Handle SocketSpec::SplitFD in socket_connect/socket_create_and_bind
-    # On macOS, SplitFD is never used (only for iOS SSH transport).
-    # Just add an unreachable!() arm to satisfy exhaustiveness.
-    bridge_patch = """SocketSpec::SplitFD(_, _) => {
-            unreachable!("SplitFD is not used on macOS")
+# 4. REAL SplitFD handling in socket_connect.
+connect_needle = """        SocketSpec::Unix(path) => {
+            let socket = socket::socket(
+                socket::AddressFamily::Unix,"""
+connect_repl = """        SocketSpec::SplitFD(r, _w) => unsafe {
+            let fd = nix::libc::dup(r.as_raw_fd());
+            if fd < 0 {
+                return Err(tag!("Failed to dup SplitFD: {}", nix::errno::Errno::last()));
+            }
+            OwnedFd::from_raw_fd(fd)
+        },
+        SocketSpec::Unix(path) => {
+            let socket = socket::socket(
+                socket::AddressFamily::Unix,"""
+if connect_needle in s and 'SocketSpec::SplitFD(r, _w) => unsafe {' not in s:
+    s = s.replace(connect_needle, connect_repl, 1)
+
+# 5. socket_create_and_bind: host never serves over SplitFD; match must compile.
+bind_needle = """        SocketSpec::Unix(path) => {
+            let (socket, cleanup) = unix_socket_create_and_bind(path, cwd, flags)?;
+            Ok((socket, Some(cleanup)))
+        }"""
+bind_repl = """        SocketSpec::SplitFD(r, _w) => unsafe {
+            let fd = nix::libc::dup(r.as_raw_fd());
+            if fd < 0 {
+                return Err(tag!("Failed to dup SplitFD: {}", nix::errno::Errno::last()));
+            }
+            Ok((OwnedFd::from_raw_fd(fd), None))
+        },
+        SocketSpec::Unix(path) => {
+            let (socket, cleanup) = unix_socket_create_and_bind(path, cwd, flags)?;
+            Ok((socket, Some(cleanup)))
+        }"""
+if bind_needle in s and 'SocketSpec::SplitFD(r, _w) => unsafe {' not in s:
+    s = s.replace(bind_needle, bind_repl, 1)
+
+# 6. Remaining multi-line SocketSpec::Unix arms get unreachable SplitFD.
+remaining_needle = """SocketSpec::Unix(path) => {"""
+remaining_repl = """SocketSpec::SplitFD(_, _) => {
+            unreachable!("SplitFD not supported on this path")
         }
         SocketSpec::Unix(path) => {"""
-    
-    if 'SocketSpec::Unix(path) => {' in s and 'SocketSpec::SplitFD(_, _) => {' not in s:
-        s = s.replace('SocketSpec::Unix(path) => {', bridge_patch)
+if remaining_needle in s:
+    tmp_marker = 'SocketSpec::UnixTMP(path) => {'
+    s = s.replace(remaining_needle, remaining_repl.replace(remaining_needle, tmp_marker))
+    s = s.replace(tmp_marker, remaining_needle)
 
-    # 4. Fix non-exhaustive matches for SINGLE-LINE match arms only.
-    #    Multi-line match arms (=> {) are handled by bridge_patch above.
-    #    Insert SplitFD arm BEFORE the matched line to keep it as a
-    #    proper match arm at the same level.
-    res_lines = []
-    for line in s.splitlines():
-        stripped = line.lstrip()
-        # Only handle single-line arms (not "=> {" which is multi-line)
-        if (stripped.startswith('SocketSpec::Unix') 
-            and '=>' in stripped 
-            and '=> {' not in stripped
-            and 'SplitFD' not in line):
-            idx = line.find('SocketSpec')
-            if idx != -1:
-                indent = line[:idx]
-                res_lines.append(f'{indent}SocketSpec::SplitFD(_, _) => unreachable!("SplitFD handled earlier"),')
-        res_lines.append(line)
-    s = '\n'.join(res_lines)
+# 7. Exhaustiveness for single-line SocketSpec::Unix match arms.
+res_lines = []
+for line in s.splitlines():
+    stripped = line.lstrip()
+    if (stripped.startswith('SocketSpec::Unix')
+        and '=>' in stripped
+        and '=> {' not in stripped
+        and 'SplitFD' not in line):
+        idx = line.find('SocketSpec')
+        indent = line[:idx]
+        res_lines.append(f'{indent}SocketSpec::SplitFD(_, _) => unreachable!("SplitFD handled earlier"),')
+    res_lines.append(line)
+s = '\n'.join(res_lines)
 
-    p.write_text(s)
+# 8. SplitFD client: connect directly (no listen/accept / ssh encode).
+run_client_needle = """) -> Result<(), String> {
+    if let Some(app_id) = secctx {"""
+run_client_splitfd = """) -> Result<(), String> {
+    if let SocketSpec::SplitFD(_, _) = socket_path {
+        let link_fd = socket_connect(socket_path, cwd, false, false)?;
+        let wayland_fd = if let Some(s) = wayland_socket {
+            s
+        } else {
+            connect_to_wayland_display(cwd)?
+        };
+        return handle_client_conn(link_fd, wayland_fd, opts);
+    }
+    if let Some(app_id) = secctx {"""
+if run_client_needle in s and 'if let SocketSpec::SplitFD(_, _) = socket_path' not in s:
+    s = s.replace(run_client_needle, run_client_splitfd, 1)
+
+relax_needle = """    if comp != expected_comp {
+        error!("Rejecting connection header {:x} due to compression type mismatch: header has {:x} != own {:x}", header, comp, expected_comp);
+        return Err(tag!("Header compression failure"));
+    }"""
+relax_repl = """    if comp != expected_comp {
+        // Guest nixpkgs waypipe can send comp=0; accept when negotiated mode matches.
+        if comp != 0 {
+            error!("Rejecting connection header {:x} due to compression type mismatch: header has {:x} != own {:x}", header, comp, expected_comp);
+            return Err(tag!("Header compression failure"));
+        }
+    }"""
+if relax_needle in s:
+    s = s.replace(relax_needle, relax_repl, 1)
+
+p.write_text(s)
 PY_EOF
+    grep -q 'SocketSpec::SplitFD(r, _w) => unsafe {' src/main.rs \
+      || { echo "ERROR: SplitFD socket_connect patch did not apply" >&2; exit 1; }
+    grep -q 'Arg::new("socket-fds")' src/main.rs \
+      || { echo "ERROR: --socket-fds clap arg did not apply" >&2; exit 1; }
+    grep -q 'if let SocketSpec::SplitFD(_, _) = socket_path' src/main.rs \
+      || { echo "ERROR: SplitFD run_client patch did not apply" >&2; exit 1; }
 
 
 
@@ -2360,6 +2453,8 @@ RUST_EOF
         exit 1
       fi
     fi
-    echo "Waypipe built with native macOS IOSurface support"
+    echo "Waypipe built with native macOS IOSurface dmabuf + --socket-fds (SplitFD)"
+    "$out/bin/waypipe" --help 2>&1 | grep -q 'socket-fds' \
+      || { echo "ERROR: waypipe --help missing --socket-fds" >&2; exit 1; }
   '';
 }

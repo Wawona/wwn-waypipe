@@ -29,59 +29,28 @@ patched = wwn-waypipe.lib.mkPatchedSrc {
 
 ```sh
 nix build .#waypipe-ios
-nix build .#waypipe-macos
-nix build .#waypipe-linux   # Linux peer: nixpkgs waypipe-rs wrapped with --no-gpu
+nix build .#waypipe-macos   # IOSurface dmabuf + --socket-fds (SplitFD)
+nix build .#waypipe-linux   # Linux peer: nixpkgs waypipe-rs (GPU allowed)
 ```
 
-### Linux peer host (e.g. SLICEANDDICE)
+### Linux peer host
 
-Remote SSH servers must run waypipe-rs that defaults to SHM (`--no-gpu`), otherwise
-`server-conn` can SIGSEGV on the dmabuf path when talking to Wawona. The wrapper
-only injects `--no-gpu` when absent (Wawona's client already passes it; clap
-rejects duplicates).
+Install ordinary waypipe-rs 0.11.0 on the SSH peer. GPU/dmabuf is allowed so
+OpenGL/Vulkan clients work. Wawona passes `--no-gpu` only when Machines
+**Disable GPU** is on.
 
 ```sh
 nix profile install github:Wawona/wwn-waypipe/development#waypipe --priority 3
-# ensure ~/.nix-profile/bin precedes /run/current-system/sw/bin (nixos default)
-which waypipe   # -> ~/.nix-profile/bin/waypipe
+which waypipe
 ```
 
 ## Wawona Swinging Bridge remote forwarding
 
-The [Wawona-Swinging-Bridge](https://github.com/Wawona/Wawona-Swinging-Bridge) app bridge turns a native
-macOS/Android app into an ordinary Wayland client (one `xdg_toplevel` per
-window, frames pushed as `wl_buffer`s). Because it speaks plain Wayland, waypipe
-can forward those surfaces to a **remote Linux compositor** with no protocol
-changes: point Swinging Bridge at waypipe's local client socket instead of the nested
-Weston socket, and waypipe tunnels the surface over SSH exactly like any other
-client.
-
-waypipe publishes a client-side proxy socket; the host app then starts the
-Swinging Bridge bridge against **that** socket name (the `socket_name` argument of
-`anowaw_start`, normally `wawona-nested`) instead of the local nested Weston
-socket. Bridged app windows then appear on the *remote* machine's compositor:
-
-```sh
-# On the local device, waypipe proxies a client socket over SSH to the remote:
-waypipe --socket "$XDG_RUNTIME_DIR/waypipe-anowaw" \
-        ssh user@remote-linux weston-desktop-shell &
-# Host app: anowaw_start(socket_name = "waypipe-anowaw", ...)
-# (Wawona passes this instead of "wawona-nested" when remote mode is selected.)
-```
-
-Buffer transport degrades gracefully: Swinging Bridge prefers zero-copy dmabuf
+See Wawona docs for Swinging Bridge. Buffer transport prefers zero-copy dmabuf
 (IOSurface on macOS, `AHardwareBuffer` on Android via wwn-iland GBM — same #86
-high-bit modifier convention), but when waypipe runs with `--no-gpu` — or the
-remote has no GPU import path — both waypipe and the Swinging Bridge core fall back to
-the always-available `wl_shm` copy path. Remote SSH cannot ship AHB handles;
-SHM/`--no-gpu` remains the remote fallback.
-
-> Scope: the local desktop machine Swinging Bridge attaches to must still be a local-only
-> nested-Weston compositor (Wawona enforces this filter). Remote forwarding is an
-> additional transport for the *bridged app surface*, not a way to select a
-> remote machine as the App Bridge desktop.
+high-bit modifier convention). **Disable GPU** forces SHM/`--no-gpu`.
 
 ## License
 
-MIT for the Wawona Nix packaging / patches (see `LICENSE`). waypipe itself is GPL-3.0;
-its source is fetched from upstream at build time.
+MIT (same as upstream waypipe where applicable; Wawona patches under the
+project license).
