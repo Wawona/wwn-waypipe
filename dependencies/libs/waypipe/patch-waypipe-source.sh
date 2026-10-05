@@ -2437,3 +2437,65 @@ CLAP_EOF
 
 
 # test
+
+# Relay already owns a connected guest stream. Reuse the real client handler
+# without a second socket listener or process-global invocation arguments.
+python3 <<'RELAY_FD_EOF'
+from pathlib import Path
+import re
+p = Path('src/lib.rs')
+if not p.exists():
+    p = Path('src/main.rs')
+s = p.read_text()
+if 'pub unsafe extern "C" fn wwn_waypipe_client_fd' not in s:
+    def replace_once(old, new):
+        global s
+        if s.count(old) != 1:
+            raise RuntimeError('Relay waypipe patch anchor missing/ambiguous: ' + old[:80])
+        s = s.replace(old, new, 1)
+    replace_once('fn w_main() -> Result<(), String> {',
+                 'fn w_main(args: Vec<String>, relay_channel: Option<OwnedFd>) -> Result<(), String> {')
+    replace_once('command.try_get_matches_from(get_args())',
+                 'command.try_get_matches_from(args)')
+    replace_once('    set_global_args(args);\n    match w_main() {',
+                 '    match w_main(args, None) {')
+    replace_once('    match w_main() {',
+                 '    match w_main(std::env::args().collect(), None) {')
+    # These legacy iterator helpers are unused, but must no longer read global args.
+    s = s.replace('get_args().into_iter().map(std::ffi::OsString::from)', 'std::env::args_os()')
+    s = s.replace('get_args().into_iter()', 'std::env::args()')
+    pattern = r'static GLOBAL_ARGS: Mutex<Vec<String>> = Mutex::new\(Vec::new\(\)\);\n\nfn set_global_args.*?\n}\n\nfn get_args.*?\n}\n'
+    s, count = re.subn(pattern, '', s, count=1, flags=re.S)
+    if count != 1 or 'GLOBAL_ARGS' in s or 'get_args()' in s:
+        raise RuntimeError('Relay waypipe argument state was not fully removed')
+    replace_once('let wayland_socket = if let Some(wayl_sock) = get_wayland_socket_id()? {',
+                 'let wayland_socket = if relay_channel.is_some() { None } else if let Some(wayl_sock) = get_wayland_socket_id()? {')
+    replace_once('        Some(("client", _submatch)) => {\n            debug!("Starting client main process");',
+                 '        Some(("client", _submatch)) => {\n            debug!("Starting client main process");\n            if let Some(link_fd) = relay_channel {\n                // Same native protocol/renderer path as a normal accepted channel.\n                // A Relay launch must not consume another client\'s WAYLAND_SOCKET.\n                let wayland_fd = connect_to_wayland_display(&cwd)?;\n                set_cloexec(&link_fd, true)?;\n                set_blocking(&link_fd)?;\n                return handle_client_conn(link_fd, wayland_fd, &opts);\n            }')
+    s += r'''
+/// Native connected-channel entry. Does not declare guest/frame readiness.
+///
+/// # Safety
+/// `fd` must remain a live connected Unix socket for this synchronous call.
+/// The caller retains ownership. The duplicate is owned and closed by waypipe.
+#[no_mangle]
+pub unsafe extern "C" fn wwn_waypipe_client_fd(fd: c_int) -> c_int {
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return 1;
+    }
+    // SAFETY: successful dup creates a new descriptor with exclusive ownership.
+    let channel = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    let args = vec!["waypipe".into(), "--oneshot".into(), "client".into()];
+    match w_main(args, Some(channel)) {
+        Ok(()) => 0,
+        Err(error) => {
+            wplog!("WAYPIPE-RELAY", "Error: {:?}", error);
+            1
+        }
+    }
+}
+'''
+    p.write_text(s)
+print('Relay native FD entry uses upstream handler and invocation-local args')
+RELAY_FD_EOF
